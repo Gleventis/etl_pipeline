@@ -1,0 +1,176 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres_api_server:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: api_server
+      POSTGRES_PASSWORD: api_server
+      POSTGRES_DB: api_server
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U api_server"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres_scheduler:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: scheduler
+      POSTGRES_PASSWORD: scheduler
+      POSTGRES_DB: scheduler
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scheduler"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  prefect_server:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4210:4200"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api_server:
+    build:
+      context: ../../api_server
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8013"]
+    environment:
+      - DATABASE_URL=postgresql://api_server:api_server@postgres_api_server:5432/api_server
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8013
+      - LOG_LEVEL=INFO
+      - PYTHONPATH=/app
+    ports:
+      - "8013:8013"
+    depends_on:
+      postgres_api_server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8013/files?limit=1')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  analyzer:
+    build:
+      context: ../../analyzer
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8012"]
+    volumes:
+      - ../../utilities:/utilities
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - API_SERVER_URL=http://api_server:8013
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8012
+      - PYTHONPATH=/app:/
+    ports:
+      - "8012:8012"
+    depends_on:
+      minio:
+        condition: service_healthy
+      api_server:
+        condition: service_healthy
+
+  scheduler:
+    build:
+      context: ../../scheduler
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8011"]
+    volumes:
+      - ../../utilities:/utilities
+    environment:
+      - ANALYZER_URL=http://analyzer:8012
+      - API_SERVER_URL=http://api_server:8013
+      - PREFECT_API_URL=http://prefect_server:4200/api
+      - DATABASE_URL=postgresql://scheduler:scheduler@postgres_scheduler:5432/scheduler
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8011
+      - STEP_DESCRIPTIVE_STATISTICS_BUCKET=data-collector
+      - STEP_DATA_CLEANING_BUCKET=data-collector
+      - STEP_TEMPORAL_ANALYSIS_BUCKET=data-collector
+      - STEP_GEOSPATIAL_ANALYSIS_BUCKET=data-collector
+      - STEP_FARE_REVENUE_ANALYSIS_BUCKET=data-collector
+      - PYTHONPATH=/app:/
+    ports:
+      - "8011:8011"
+    depends_on:
+      postgres_scheduler:
+        condition: service_healthy
+      prefect_server:
+        condition: service_healthy
+      analyzer:
+        condition: service_started
+      api_server:
+        condition: service_healthy
+
+  data_collector:
+    build:
+      context: ../../data_collector
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.server.app:app", "--host", "0.0.0.0", "--port", "8010"]
+    volumes:
+      - ../../utilities:/utilities
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=data-collector
+      - SCHEDULER_URL=http://scheduler:8011
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8010
+      - PYTHONPATH=/app:/
+    ports:
+      - "8010:8010"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  aggregator:
+    build:
+      context: ../../aggregator
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8014"]
+    environment:
+      - API_SERVER_URL=http://api_server:8013
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8014
+      - LOG_LEVEL=INFO
+      - REQUEST_TIMEOUT=30.0
+      - PYTHONPATH=/app
+    ports:
+      - "8014:8014"
+    depends_on:
+      api_server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8014/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

@@ -1,0 +1,37 @@
+services:
+  analyzer:
+    build:
+      context: ../../analyzer
+      dockerfile: Dockerfile
+    volumes:
+      - ../../analyzer:/app
+      - ../../utilities:/utilities
+    working_dir: /app
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - API_SERVER_URL=http://api_server:8000
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8002
+      - PYTHONPATH=/app:/
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

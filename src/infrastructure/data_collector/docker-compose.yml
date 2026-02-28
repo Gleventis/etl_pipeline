@@ -1,0 +1,36 @@
+services:
+  data_collector:
+    build:
+      context: ../../data_collector
+      dockerfile: Dockerfile
+    volumes:
+      - ../../data_collector:/app
+      - ../../utilities:/utilities
+    working_dir: /app
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=data-collector
+      - SCHEDULER_URL=http://scheduler:8001
+      - PYTHONPATH=/app:/
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

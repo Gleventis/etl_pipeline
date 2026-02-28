@@ -1,0 +1,65 @@
+{
+  "name": "executioner",
+  "description": "executes ralph loops with python 3.12 and industry best practices",
+  "prompt": "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.agents/prompts/executioner.md",
+  "mcpServers": {},
+  "tools": [
+    "*"
+  ],
+  "toolAliases": {},
+  "allowedTools": [
+    "fs_read",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "resources": [
+
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/behavioral.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/context_reset.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/fastapi_main_entrypoint.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/plan_context_estimation.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/service_readme.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/single_task_execution.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/atomic_plan_tasks.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/specs_required.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/file_lookup.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/lessons.md",
+    "file:////home/elevgeo/.kiro/agents/global_rules/generic/prompt_scope_only.md",
+
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/downstream/docker-execution.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/downstream/python-testing.md",
+
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/implementation-explicit_keyword_arguments.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/implementation-main_block.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/implementation-solid_principles.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-code-quality.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-data-models.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-database.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-dependency-management.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-docstrings.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-exceptions.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-fastapi.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-functions.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-http-client.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-imports.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-logging.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-naming.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-security.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/upstream/python-typing.md"
+  ],
+  "hooks": {},
+  "toolsSettings": {
+    "read": {
+      "allowedPaths": [
+        "/home/elevgeo/personal/repos/ralph_experimentation/**"
+      ],
+      "deniedPaths": [
+        "**/.git/**"
+      ]
+    },
+    "subagent": {}
+  },
+  "useLegacyMcpJson": true,
+  "model": "claude-opus-4.6"
+}

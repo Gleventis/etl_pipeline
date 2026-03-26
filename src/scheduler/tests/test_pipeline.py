@@ -3,7 +3,12 @@
 import pytest
 
 from src.services.config import Settings
-from src.services.pipeline import STEPS, get_input_bucket, get_next_step
+from src.services.pipeline import (
+    STEPS,
+    get_input_bucket,
+    get_next_step,
+    validate_step_names,
+)
 
 
 class TestSteps:
@@ -101,3 +106,33 @@ class TestGetNextStep:
     def test_four_completed_returns_last(self) -> None:
         result = get_next_step(completed_steps=STEPS[:4])
         assert result == "fare_revenue_analysis"
+
+
+class TestValidateStepNames:
+    """Tests for validate_step_names."""
+
+    def test_all_valid_returns_empty(self) -> None:
+        result = validate_step_names(step_names=list(STEPS))
+        assert result == []
+
+    def test_empty_input_returns_empty(self) -> None:
+        result = validate_step_names(step_names=[])
+        assert result == []
+
+    def test_all_invalid_returns_all(self) -> None:
+        result = validate_step_names(step_names=["bogus", "fake"])
+        assert result == ["bogus", "fake"]
+
+    def test_mixed_returns_only_invalid(self) -> None:
+        result = validate_step_names(
+            step_names=["data_cleaning", "bogus", "temporal_analysis", "fake"]
+        )
+        assert result == ["bogus", "fake"]
+
+    def test_single_valid_returns_empty(self) -> None:
+        result = validate_step_names(step_names=["descriptive_statistics"])
+        assert result == []
+
+    def test_single_invalid_returns_it(self) -> None:
+        result = validate_step_names(step_names=["nonexistent"])
+        assert result == ["nonexistent"]

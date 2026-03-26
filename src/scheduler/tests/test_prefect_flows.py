@@ -497,6 +497,140 @@ class TestProcessFileFlow:
     @patch("src.services.prefect_flows.send_job")
     @patch("src.services.prefect_flows.create_job_execution")
     @patch("src.services.prefect_flows.create_file_record")
+    def test_skip_checkpoints_skips_save_for_specified_steps(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+        skipped = [STEPS[0], STEPS[2]]
+
+        process_file_flow.fn(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-skip-1",
+            skip_checkpoints=skipped,
+        )
+
+        # 1 initial + (5 - 2 skipped) = 4 total save_job_state calls
+        assert mock_save.call_count == 4
+        # Verify the saves that DID happen have the right completed_steps
+        # Initial save: completed_steps=[]
+        assert mock_save.call_args_list[0].kwargs["completed_steps"] == []
+        assert mock_save.call_args_list[0].kwargs["current_step"] == STEPS[0]
+        # After STEPS[0] (skipped) → no save
+        # After STEPS[1] (not skipped) → save with completed=[0,1]
+        assert mock_save.call_args_list[1].kwargs["completed_steps"] == list(STEPS[:2])
+        assert mock_save.call_args_list[1].kwargs["current_step"] == STEPS[2]
+        # After STEPS[2] (skipped) → no save
+        # After STEPS[3] (not skipped) → save with completed=[0,1,2,3]
+        assert mock_save.call_args_list[2].kwargs["completed_steps"] == list(STEPS[:4])
+        assert mock_save.call_args_list[2].kwargs["current_step"] == STEPS[4]
+        # After STEPS[4] (not skipped) → save with completed=all, status=completed
+        assert mock_save.call_args_list[3].kwargs["completed_steps"] == list(STEPS)
+        assert mock_save.call_args_list[3].kwargs["status"] == "completed"
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_skip_checkpoints_still_saves_on_failure(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102]
+        mock_send_job.side_effect = [
+            AnalyzerResponse(success=True),
+            AnalyzerResponse(success=False, error="crash"),
+        ]
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+        # Skip the step that will fail
+        skipped = [STEPS[1]]
+
+        process_file_flow.fn(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-skip-2",
+            skip_checkpoints=skipped,
+        )
+
+        # 1 initial + 1 (step 0 not skipped) + 1 (failure always saves) = 3
+        assert mock_save.call_count == 3
+        failure_call = mock_save.call_args_list[2]
+        assert failure_call.kwargs["status"] == "failed"
+        assert failure_call.kwargs["failed_step"] == STEPS[1]
+        assert failure_call.kwargs["completed_steps"] == [STEPS[0]]
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_skip_all_checkpoints_only_saves_initial(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow.fn(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-skip-3",
+            skip_checkpoints=list(STEPS),
+        )
+
+        # Only the initial save — all step saves skipped
+        assert mock_save.call_count == 1
+        assert mock_save.call_args.kwargs["current_step"] == STEPS[0]
+        assert mock_save.call_args.kwargs["status"] == "in_progress"
+        # All 5 steps still executed
+        assert mock_send_job.call_count == len(STEPS)
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
     def test_resume_from_last_step(
         self,
         mock_create_file,

@@ -8,6 +8,7 @@ class ScheduleRequest(BaseModel):
 
     bucket: str = Field(min_length=1)
     objects: list[str] = Field(min_length=1)
+    skip_checkpoints: list[str] = Field(default_factory=list)
 
 
 class FileStatus(BaseModel):
@@ -56,6 +57,13 @@ class JobState(BaseModel):
 if __name__ == "__main__":
     req = ScheduleRequest(bucket="raw-data", objects=["file1.parquet"])
     print(f"ScheduleRequest: {req.model_dump()}")
+
+    req_skip = ScheduleRequest(
+        bucket="raw-data",
+        objects=["file1.parquet"],
+        skip_checkpoints=["temporal_analysis"],
+    )
+    print(f"ScheduleRequest with skip: {req_skip.model_dump()}")
 
     state = JobState(current_step="data_cleaning", status="in_progress")
     print(f"JobState: {state.model_dump()}")

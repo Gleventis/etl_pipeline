@@ -27,7 +27,13 @@ class SchedulerService:
         self._settings = settings
         self._db_url = db_url
 
-    def schedule_batch(self, *, bucket: str, objects: list[str]) -> list[FileStatus]:
+    def schedule_batch(
+        self,
+        *,
+        bucket: str,
+        objects: list[str],
+        skip_checkpoints: list[str] | None = None,
+    ) -> list[FileStatus]:
         """Schedule a batch of files for pipeline processing.
 
         Checks for in-progress jobs, then triggers a Prefect flow run
@@ -36,6 +42,7 @@ class SchedulerService:
         Args:
             bucket: MinIO bucket where the files reside.
             objects: List of S3 object paths to process.
+            skip_checkpoints: Step names for which checkpoint persistence is skipped.
 
         Returns:
             List of FileStatus with per-file scheduling outcome.
@@ -60,6 +67,7 @@ class SchedulerService:
         self._run_flows_concurrently(
             pipeline_run_id=pipeline_run_id,
             args=[{"object_name": obj, "bucket": bucket} for obj in processable],
+            skip_checkpoints=skip_checkpoints or [],
         )
 
         return statuses
@@ -108,7 +116,11 @@ class SchedulerService:
         return resumed
 
     def _run_flows_concurrently(
-        self, *, pipeline_run_id: str, args: list[dict[str, str]]
+        self,
+        *,
+        pipeline_run_id: str,
+        args: list[dict[str, str]],
+        skip_checkpoints: list[str] | None = None,
     ) -> None:
         """Submit flow runs to a thread pool and wait for all to complete.
 
@@ -116,6 +128,7 @@ class SchedulerService:
             pipeline_run_id: Unique identifier for this pipeline run.
             args: List of dicts with per-flow keyword arguments
                   (object_name, bucket, and optionally start_step).
+            skip_checkpoints: Step names for which checkpoint persistence is skipped.
         """
         with ThreadPoolExecutor(max_workers=len(args) or 1) as executor:
             futures = [
@@ -127,6 +140,7 @@ class SchedulerService:
                     db_url=self._db_url,
                     pipeline_run_id=pipeline_run_id,
                     start_step=kw.get("start_step"),
+                    skip_checkpoints=skip_checkpoints or [],
                 )
                 for kw in args
             ]

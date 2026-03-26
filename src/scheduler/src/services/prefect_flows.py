@@ -74,6 +74,7 @@ def process_file_flow(
     db_url: str,
     pipeline_run_id: str,
     start_step: str | None = None,
+    skip_checkpoints: list[str] | None = None,
 ) -> None:
     """Walk a single file through the pipeline steps sequentially.
 
@@ -87,6 +88,7 @@ def process_file_flow(
         db_url: Postgres connection string.
         pipeline_run_id: Unique identifier for the pipeline run.
         start_step: Step to resume from. If None, starts from the first step.
+        skip_checkpoints: Step names for which checkpoint persistence is skipped.
     """
     taxi_type = extract_taxi_type(object_name=object_name)
     file_id = create_file_record(
@@ -202,17 +204,19 @@ def process_file_flow(
                 total_computation_seconds=total_computation_seconds,
             )
 
-            completed_steps.append(next_step)
+            just_completed = next_step
+            completed_steps.append(just_completed)
             next_step = get_next_step(completed_steps=completed_steps)
-            save_job_state(
-                conn=conn,
-                object_name=object_name,
-                bucket=bucket,
-                current_step=next_step,
-                status="in_progress" if next_step else "completed",
-                completed_steps=list(completed_steps),
-                failed_step=None,
-            )
+            if just_completed not in (skip_checkpoints or []):
+                save_job_state(
+                    conn=conn,
+                    object_name=object_name,
+                    bucket=bucket,
+                    current_step=next_step,
+                    status="in_progress" if next_step else "completed",
+                    completed_steps=list(completed_steps),
+                    failed_step=None,
+                )
 
         total_elapsed_seconds = time.monotonic() - flow_start
         update_file(

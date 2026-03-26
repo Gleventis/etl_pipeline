@@ -66,8 +66,42 @@ class TestScheduleEndpoint:
             json={"bucket": "raw-data", "objects": ["a.parquet", "b.parquet"]},
         )
         mock_service.schedule_batch.assert_called_with(
-            bucket="raw-data", objects=["a.parquet", "b.parquet"]
+            bucket="raw-data",
+            objects=["a.parquet", "b.parquet"],
+            skip_checkpoints=[],
         )
+
+    def test_schedule_with_valid_skip_checkpoints_returns_202(self) -> None:
+        mock_service.schedule_batch.return_value = [
+            FileStatus(object_name="file1.parquet", status="started")
+        ]
+        response = client.post(
+            "/scheduler/schedule",
+            json={
+                "bucket": "raw-data",
+                "objects": ["file1.parquet"],
+                "skip_checkpoints": ["data_cleaning", "temporal_analysis"],
+            },
+        )
+        assert response.status_code == status.HTTP_202_ACCEPTED
+        assert response.json()["files"][0]["object_name"] == "file1.parquet"
+        mock_service.schedule_batch.assert_called_with(
+            bucket="raw-data",
+            objects=["file1.parquet"],
+            skip_checkpoints=["data_cleaning", "temporal_analysis"],
+        )
+
+    def test_schedule_rejects_invalid_skip_checkpoints(self) -> None:
+        response = client.post(
+            "/scheduler/schedule",
+            json={
+                "bucket": "raw-data",
+                "objects": ["file1.parquet"],
+                "skip_checkpoints": ["bogus_step"],
+            },
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "bogus_step" in response.json()["detail"]
 
 
 class TestResumeEndpoint:

@@ -102,6 +102,7 @@ class TestScheduleBatch:
             db_url=service._db_url,
             pipeline_run_id="abc123",
             start_step=None,
+            skip_checkpoints=[],
         )
 
     @patch("src.services.scheduler.process_file_flow")
@@ -175,6 +176,7 @@ class TestCheckpointLifecycle:
             db_url=service._db_url,
             pipeline_run_id="resume-run-001",
             start_step=STEPS[2],
+            skip_checkpoints=[],
         )
 
 
@@ -211,6 +213,7 @@ class TestResumeFailed:
             db_url=service._db_url,
             pipeline_run_id="resume123",
             start_step=STEPS[2],
+            skip_checkpoints=[],
         )
 
     @patch("src.services.scheduler.process_file_flow")

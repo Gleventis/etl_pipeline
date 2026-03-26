@@ -73,3 +73,12 @@
 - The analyzer client had a 60s default timeout, but data_cleaning on a 48MB yellow taxi file took ~100s.
 - Fix: add `ANALYZER_TIMEOUT` config setting (300s default) and pass it through the `execute_step` Prefect task to `send_job`.
 - Lesson: always check the expected computation time from the spec when setting HTTP timeouts for inter-service calls.
+
+## 2026-03-12: Monkeypatching httpx.Client requires __init__ override
+- When monkeypatching `httpx.Client` to inject a `MockTransport`, do NOT use a lambda wrapper like `lambda **kwargs: httpx.Client(transport=transport, **kwargs)` — the production code also passes `transport` (or `verify`) via kwargs, causing "multiple values for keyword argument".
+- Fix: monkeypatch `httpx.Client.__init__` directly, override `transport` in kwargs, and pop conflicting params like `verify`.
+
+## 2026-03-13: Subagent file existence reports can be stale or wrong
+- When a subagent reports a file doesn't exist, verify with `git status` or `ls` before using `fs_write create` — the file may already be committed.
+- `fs_write create` silently overwrites existing files. If the file exists, use `str_replace` to make surgical edits instead.
+- This is an extension of the 2026-03-05 lesson about verifying file existence before using `create`.

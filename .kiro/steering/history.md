@@ -1486,3 +1486,551 @@
 - **Context / Motivation**: Existing tests verified each checkpoint piece in isolation (flow failure state, resume_failed reading DB, flow skipping steps). No test chained `schedule_batch` → flow failure writing state → `resume_failed` → flow dispatch with `start_step`. This gap meant a wiring bug between these components could go undetected.
 - **Decisions Made**: Used a `side_effect` on the mocked flow to simulate the flow writing failure state to the real Postgres DB during `schedule_batch`. Then called `resume_failed` and asserted it dispatched a flow with `start_step=STEPS[2]`, proving the checkpoint was read correctly. This tests the integration seam without needing the full Prefect runtime.
 - **Lessons**: None new.
+
+---
+
+## 2026-03-12
+
+- **Change Type**: `feat`
+- **Summary**: Added `validate_step_names()` function to `src/scheduler/src/services/pipeline.py` — validates step names against the `STEPS` list and returns invalid ones.
+- **Context / Motivation**: Step 1 of the scheduler checkpoint configuration plan. The scheduler needs to validate `skip_checkpoints` step names from API requests before threading them through the pipeline. This function is the foundation for the 422 validation in the route layer.
+- **Decisions Made**: Pure function using a set lookup for O(1) membership checks. Returns invalid names (not a bool) so the caller can include them in error messages. Keyword-only argument to match project convention.
+- **Lessons**: None new.
+
+## 2026-03-12
+- **Change Type**: `feat`
+- **Summary**: Added `skip_checkpoints: list[str] = Field(default_factory=list)` to `ScheduleRequest` model in `src/scheduler/src/server/models.py`.
+- **Context / Motivation**: Step 2 of the scheduler checkpoint configuration plan. The API needs to accept an optional list of step names for which checkpoint persistence should be skipped, enabling thesis experiments comparing pipeline recovery with and without checkpoints.
+- **Decisions Made**: Used `Field(default_factory=list)` for the default to maintain backward compatibility — existing callers that don't send the field get an empty list (all steps checkpointed). No validation at the model level; step name validation will be handled in the route layer (Step 3).
+- **Lessons**: None new.
+
+## 2026-03-12
+- **Change Type**: `feat`
+- **Summary**: Added `skip_checkpoints` validation in `routes.py` — returns 422 with invalid step names if `skip_checkpoints` contains unrecognized pipeline steps.
+- **Context / Motivation**: Step 3 of the scheduler checkpoint configuration plan. The route layer must validate `skip_checkpoints` before passing the request to the service layer, providing clear error messages for invalid step names.
+- **Decisions Made**: Validation runs before any service call to fail fast. Uses `HTTPException` with 422 status and includes the invalid names in the detail message for debuggability. Reuses `validate_step_names()` from Step 1.
+- **Lessons**: None new.
+
+## 2026-03-12T22:08
+
+- **Change Type**: `feat`
+- **Summary**: Threaded `skip_checkpoints` through `schedule_batch()` → `_run_flows_concurrently()` → `process_file_flow()` args.
+- **Context / Motivation**: Step 4 of the scheduler checkpoint configuration plan. The validated `skip_checkpoints` list from the route needs to reach the Prefect flow so it can conditionally skip state persistence. This step wires the parameter through the scheduler service layer.
+- **Decisions Made**: Used `list[str] | None = None` default on `schedule_batch` and `_run_flows_concurrently` to avoid breaking existing callers (e.g., `resume_failed` which has no skip list). Normalized to `[]` via `or []` before passing downstream. Added `skip_checkpoints` to `process_file_flow` signature as accepted-but-unused (logic deferred to Step 5).
+- **Lessons**: None new.
+
+## 2026-03-12T22:12 — Step 5: Conditional checkpoint skip in process_file_flow
+- **Change Type**: `feat`
+- **Summary**: Implemented conditional `save_job_state` skip in `process_file_flow` for steps listed in `skip_checkpoints`.
+- **Context / Motivation**: Step 5 of the scheduler checkpoint configuration plan. This is the core logic that makes checkpoint skipping work — all plumbing (steps 1–4) was already in place, and this step actually uses the `skip_checkpoints` parameter to conditionally bypass state persistence.
+- **Decisions Made**: Captured `just_completed = next_step` before reassigning `next_step` to the next step, then checked `just_completed not in (skip_checkpoints or [])`. The `or []` handles the `None` default. Failure-path `save_job_state` remains unconditional per spec — only the success-path call is gated.
+- **Lessons**: None new.
+
+---
+
+## 2026-03-12
+
+- **Change Type**: `test`
+- **Summary**: Added tests for `skip_checkpoints` field on `ScheduleRequest` model. Verified Step 6 (`validate_step_names` tests) was already complete.
+- **Context / Motivation**: Steps 6–7 of the scheduler checkpoint configuration plan. Step 6 tests were already present in `test_pipeline.py` from a prior session. Step 7 added 3 new tests to `test_models.py` covering default value, valid step names, and serialization.
+- **Decisions Made**: Added tests inline in the existing `TestScheduleRequest` class rather than creating a new test class, since the tests are about the same model.
+- **Lessons**: None new.
+
+## 2026-03-12: Route test for invalid skip_checkpoints → 422
+- **Date**: 2026-03-12T22:17+01:00
+- **Change Type**: `test`
+- **Summary**: Added route test verifying POST /scheduler/schedule with invalid `skip_checkpoints` returns 422 with the invalid step name in the detail message.
+- **Context / Motivation**: Step 8 of the scheduler checkpoint configuration plan. Validates the route-level validation logic added in Step 3.
+- **Decisions Made**: Used `HTTP_422_UNPROCESSABLE_ENTITY` to match the existing route code, despite FastAPI deprecation warning favoring `HTTP_422_UNPROCESSABLE_CONTENT` — that's a pre-existing issue.
+- **Lessons**: None new.
+
+## 2026-03-12
+
+- **Change Type**: `test`
+- **Summary**: Added route test verifying POST /scheduler/schedule with valid `skip_checkpoints` returns 202 and passes the list through to the service.
+- **Context / Motivation**: Step 9 of the scheduler checkpoint configuration plan. Complements the invalid-case test from Step 8 by covering the happy path with checkpoint skipping.
+- **Decisions Made**: Single test covers status code, response body, and service call assertion — all part of the same concept (valid skip_checkpoints accepted).
+- **Lessons**: None new.
+
+## 2026-03-12
+
+- **Date**: 2026-03-12T22:21+01:00
+- **Change Type**: `test`
+- **Summary**: Added 3 tests for `process_file_flow` verifying `save_job_state` is skipped for steps in `skip_checkpoints`, failure saves always happen, and skipping all steps leaves only the initial save.
+- **Context / Motivation**: Step 10 of the scheduler checkpoint configuration plan. This is the core behavioral test for the entire checkpoint skipping feature — validates that the thesis experiment (run pipeline without checkpoints) works correctly.
+- **Decisions Made**: Three tests cover the key scenarios: partial skip, failure on skipped step, and full skip. Assertions verify exact `save_job_state` call counts and argument contents rather than just counts.
+- **Lessons**: None new.
+
+---
+
+## 2026-03-12
+- **Change Type**: `chore`
+- **Summary**: Ran ruff check and ruff format on all 9 files modified during the scheduler checkpoint config feature. All passed clean (0 issues, 0 reformats). Verified all 136 scheduler tests pass.
+- **Context / Motivation**: Step 11 of the scheduler checkpoint configuration plan. Code quality gate before considering the feature complete.
+- **Decisions Made**: Ran ruff against only the files touched by this feature (surgical scope per behavioral guidelines).
+- **Lessons**: None new.
+
+## 2026-03-12T22:26 — Step 12: Update scheduler README with checkpoint configuration
+
+- **Change Type**: `docs`
+- **Summary**: Updated scheduler README to document the `skip_checkpoints` parameter on the schedule endpoint and added a new "Checkpoint Configuration" section with behavior explanation and example request.
+- **Context / Motivation**: Final step (Step 12) of the scheduler checkpoint configuration implementation plan. README must reflect the new API capability.
+- **Decisions Made**: Added inline description to the endpoint table row and a dedicated section rather than just a footnote, since the feature has non-obvious resume behavior worth documenting.
+- **Lessons**: None new.
+
+## 2026-03-12
+
+**Summary**: Created `src/translator/pyproject.toml` — foundation for the translator service.
+**Change Type**: feat
+**Context / Motivation**: First step of the translator service implementation plan. The pyproject.toml defines dependencies (fastapi, uvicorn, httpx, pydantic, pydantic-settings, psycopg2-binary) and build config, enabling all subsequent translator steps.
+**Decisions Made**: Followed existing service conventions (aggregator/scheduler) for structure. Used hatchling build backend with `packages = ["src"]` layout. No testcontainers in dev deps — not needed per plan (translator uses direct Postgres, not testcontainers).
+**Lessons**: None new.
+
+## 2026-03-12: Translator Settings config class
+
+**Summary**: Created `src/translator/src/services/config.py` with `Settings` class and tests.
+**Change Type**: feat
+**Context / Motivation**: Step 2 of translator service implementation plan. Settings class provides env-var-driven configuration for all downstream service URLs, database connection, and server binding.
+**Decisions Made**: Followed existing service pattern (aggregator, scheduler). Port 8005 chosen for translator (8000-8003 taken by other services). Created directory structure (`src/server/`, `src/services/`, `tests/`) with `__init__.py` files. Tests run locally with `uv run` since no Docker infrastructure exists yet (Step 16-17).
+**Lessons**: None new.
+
+## 2026-03-12: TranslateRequest model
+**Summary**: Created `TranslateRequest` pydantic model in `src/translator/src/server/models.py`.
+**Change Type**: feat
+**Context / Motivation**: Step 3 of translator service implementation plan. Foundational request model needed by the `POST /translator/translate` route.
+**Decisions Made**: Frozen (immutable DTO), `min_length=1` on `dsl` field to reject empty strings at the validation boundary. Matched existing project style (ConfigDict, Field).
+**Lessons**: None new.
+
+## 2026-03-12: RunResponse model
+**Summary**: Created `RunResponse` pydantic model in `src/translator/src/server/models.py`.
+**Change Type**: feat
+**Context / Motivation**: Step 4 of translator service implementation plan. Response model for `POST /translator/translate` (202 Accepted) returning the `run_id` for async polling.
+**Decisions Made**: Frozen (immutable DTO), single `run_id: str` field. No UUID type enforcement at the model level — the route/store layer is responsible for generating valid UUIDs.
+**Lessons**: None new.
+
+## 2026-03-12: RunStatusResponse model
+**Summary**: Created `RunStatusResponse` pydantic model in `src/translator/src/server/models.py`.
+**Change Type**: feat
+**Context / Motivation**: Step 5 of translator service implementation plan. Response model for `GET /translator/runs/{run_id}` returning run status with phase and optional error.
+**Decisions Made**: Frozen (immutable DTO), `error: str | None = None` defaults to None for non-failed runs. Phase is plain `str` rather than an enum — the spec lists valid phases but enforcement belongs in the store/executor layer, not the response DTO.
+**Lessons**: None new.
+
+---
+
+## 2026-03-12: Translator DSL parser models + stub
+
+**Summary**: Created `ParsedCommand` models (`CollectCommand`, `AnalyzeCommand`, `AggregateCommand`, `ParsedPipeline`) and stub `parse_dsl()` in `src/translator/src/services/dsl_parser.py`.
+**Change Type**: feat
+**Context / Motivation**: Step 6 of translator service implementation plan. These models define the contract between the DSL parser and the executor — every downstream component depends on them.
+**Decisions Made**: Models aligned to downstream API contracts (data collector, scheduler, aggregator). All frozen (immutable DTOs). `parse_dsl()` validates empty input then raises `NotImplementedError` since grammar is TBD. Kept types simple (e.g., `year: int` not range types) — the executor will handle conversion to downstream API formats.
+**Lessons**: None new.
+
+## 2026-03-12: Translator RunStore persistence layer
+**Summary**: Created `RunStore` class in `src/translator/src/services/run_store.py` with `init_schema`, `create_run`, `update_phase`, `get_run` methods.
+**Change Type**: feat
+**Context / Motivation**: Step 7 of translator service implementation plan. RunStore is the persistence layer that the executor, routes, and tests all depend on — it's the critical path for all subsequent steps.
+**Decisions Made**: Class-based design (not module-level functions) for dependency injection into executor/routes. Follows scheduler's psycopg2 context manager pattern. Each method opens/closes its own connection for simplicity. Returns `dict | None` from `get_run` rather than a Pydantic model to keep it lightweight — the route layer already has `RunStatusResponse` for serialization.
+**Lessons**: None new.
+
+## 2026-03-12
+**Summary**: Created `DataCollectorClient` in `src/translator/src/services/data_collector_client.py` with `collect` method and response models.
+**Change Type**: feat
+**Context / Motivation**: Step 8 of translator service implementation plan. HTTP client that translates `CollectCommand` from the DSL parser into a POST request to the data collector's `/collector/collect` endpoint.
+**Decisions Made**: `base_url` injected via constructor (not per-call) for consistency with how Settings provides it. Local response models (`FileSuccess`, `FileFailure`, `CollectResult`) mirror the data collector's models — no cross-service imports. 300s timeout since data collection involves downloading and uploading parquet files. No retry logic per spec ("no retry" on downstream failure).
+**Lessons**: None new.
+
+## 2026-03-12: Add SchedulerClient for translator service
+**Summary**: Created `SchedulerClient` in `src/translator/src/services/scheduler_client.py` with `schedule` method and response models.
+**Change Type**: feat
+**Context / Motivation**: Step 9 of translator service implementation plan. HTTP client that translates `AnalyzeCommand` from the DSL parser into a POST request to the scheduler's `/scheduler/schedule` endpoint with `skip_checkpoints` support.
+**Decisions Made**: Follows `DataCollectorClient` pattern exactly. 600s timeout (doubled from data collector) since scheduling triggers the full analytical pipeline which can take minutes per file. Local `ScheduleResult`/`FileStatus` models mirror scheduler's response — no cross-service imports.
+**Lessons**: None new.
+
+## 2026-03-12: AggregatorClient + tests
+**Summary**: Created `AggregatorClient` in `src/translator/src/services/aggregator_client.py` with `aggregate` method and `EmptyAggregationError`.
+**Change Type**: feat
+**Context / Motivation**: Step 10 of translator service implementation plan. HTTP client that translates `AggregateCommand` from the DSL parser into a GET request to the aggregator's `/aggregations/<endpoint>` with optional query params.
+**Decisions Made**: Returns raw `dict` instead of typed response model since each aggregator endpoint has a different response shape — the executor will use the dict as-is. `EmptyAggregationError` raised when `file_count == 0` per spec's 412 requirement. 120s timeout (aggregator does cross-service calls to API server). Tests use `httpx.MockTransport` with monkeypatched `__init__` to inject transport without conflicting with production kwargs.
+**Lessons**: Monkeypatching `httpx.Client` via a lambda that forwards `**kwargs` and also sets `transport` causes "multiple values for keyword argument" — must patch `__init__` directly and override `transport` in kwargs instead.
+
+## 2026-03-12T22:51 — Step 11: Executor
+**Summary**: Created `Executor` class in `src/translator/src/services/executor.py` that orchestrates collect → analyze → aggregate pipeline with phase tracking.
+**Change Type**: feat
+**Context / Motivation**: Step 11 of translator service implementation plan. Core orchestration logic that ties together all three downstream clients and the RunStore. Routes (Steps 12-13) depend on this.
+**Decisions Made**: Used dependency injection for all three clients (DataCollectorClient, SchedulerClient, AggregatorClient) via `__init__` rather than accepting Settings and constructing clients internally — makes testing trivial with MagicMock and follows SOLID/DI principles. Removed `settings` from `execute()` signature since clients are pre-built. EmptyAggregationError caught separately for clarity but both exception paths produce the same "failed" phase. 10 tests covering full pipeline, partial sections (collect-only, analyze-only, aggregate-only, empty), and failure-stops-execution scenarios.
+**Lessons**: None new — straightforward DI pattern.
+
+## 2026-03-12: Add POST /translator/translate route
+- **Change Type**: feat
+- **Summary**: Created the `POST /translator/translate` endpoint in `src/translator/src/server/routes.py`. Parses DSL (400 on failure), creates a run record, spawns a daemon background thread for pipeline execution, and returns 202 with `run_id`.
+- **Context / Motivation**: Step 12 of the translator service implementation plan. This is the core entry point that ties together the DSL parser, run store, and executor.
+- **Decisions Made**: Used `request.app.state` pattern (consistent with scheduler and other services) for dependency access. Daemon thread so it doesn't block server shutdown. Catches both `ValueError` and `NotImplementedError` from `parse_dsl` as 400s.
+- **Lessons**: None new — followed existing patterns from scheduler routes.
+
+## 2026-03-12: Add GET /translator/runs/{run_id} endpoint
+- **Change Type**: `feat`
+- **Summary**: Added the GET endpoint for polling run status, completing the translator API surface.
+- **Context / Motivation**: Step 13 of the translator service implementation plan. The POST /translate endpoint was already done; this completes the contract so operators can poll for run status.
+- **Decisions Made**: Reused existing `_get_run_store()` helper and `RunStatusResponse` model. Kept it minimal — just a lookup + 404 guard.
+- **Lessons**: None new — straightforward wiring of existing components.
+
+## 2026-03-12T22:58 — Step 14: Create translator FastAPI main.py
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/server/main.py` with async lifespan wiring RunStore, downstream clients, and Executor into app.state.
+- **Context / Motivation**: Step 14 of the translator service implementation plan. This is the critical wiring that makes the service runnable — unblocks Dockerfile, docker-compose, and route-level tests.
+- **Decisions Made**: Used `@asynccontextmanager` (per lesson about sync lifespan crashing uvicorn). Followed aggregator/scheduler pattern for lifespan structure. RunStore schema init happens at startup. All clients constructed from SETTINGS URLs.
+- **Lessons**: None new — applied existing lesson about async lifespan requirement.
+
+## 2026-03-12: Add translator service uvicorn entrypoint
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/main.py` — thin uvicorn entrypoint matching the pattern used by all other services.
+- **Context / Motivation**: Step 15 of the translator implementation plan. First blocker in the dependency chain for Dockerfile (Step 16) and docker-compose (Step 17).
+- **Decisions Made**: Copied the exact pattern from `src/aggregator/src/main.py` — imports `app` from `src.server.main` and `SETTINGS` from `src.services.config`, runs uvicorn in `__main__` block.
+- **Lessons**: None new — straightforward pattern replication.
+
+## 2026-03-12T23:01 — Translator Dockerfile
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/Dockerfile` — Python 3.12-slim with uv, matching the existing service Dockerfile pattern.
+- **Context / Motivation**: Step 16 of the translator implementation plan. Blocker for docker-compose (Step 17) and all test steps (18-24) which require container execution.
+- **Decisions Made**: Copied exact pattern from `src/aggregator/Dockerfile`. Port 8005 matches `Settings.SERVER_PORT` default. Verified build succeeds.
+- **Lessons**: None new — straightforward pattern replication.
+
+## 2026-03-12: Translator docker-compose.yml
+- **Change Type**: `feat`
+- **Summary**: Created `src/infrastructure/translator/docker-compose.yml` with translator service + Postgres.
+- **Context / Motivation**: Step 17 of translator implementation plan. Blocker for all test steps (18-24) since all execution happens via docker compose.
+- **Decisions Made**: Used host port 5435 for Postgres to avoid conflict with existing `cbd_db` container on 5434. Matched patterns from aggregator/scheduler compose files. External services (data_collector, scheduler, aggregator) not included — only needed in end-to-end compose.
+- **Lessons**: None new — straightforward infrastructure task.
+
+## 2026-03-12: Step 18 — RunStore tests
+- **Date**: 2026-03-12T23:04
+- **Change Type**: `test`
+- **Summary**: Added `tests/test_run_store.py` with 7 tests covering create_run, update_phase, and get_run (including not-found case).
+- **Context / Motivation**: Step 18 of translator implementation plan. RunStore is the foundational data layer — testing it first ensures correctness before testing higher-level components (Executor, routes).
+- **Decisions Made**: Used real Postgres from docker-compose (integration tests). Fixture initializes schema and cleans table between tests. Matched existing test style (class-based, descriptive method names).
+- **Lessons**: None new — straightforward integration test against compose Postgres.
+
+---
+
+## 2026-03-12: DataCollectorClient tests
+- **Date**: 2026-03-12T23:06
+- **Change Type**: `test`
+- **Summary**: Added `tests/test_data_collector_client.py` with 5 tests covering success, empty response, HTTP error propagation, request body correctness, and URL correctness.
+- **Context / Motivation**: Step 19 of translator implementation plan. Client tests are prerequisites for Executor test confidence (Step 22).
+- **Decisions Made**: Matched existing test pattern from `test_aggregator_client.py` — monkeypatched `httpx.Client.__init__` with `MockTransport`. Tested both response parsing and request construction.
+- **Lessons**: None new — followed established pattern.
+
+## 2026-03-12: SchedulerClient tests
+- **Date**: 2026-03-12T23:08
+- **Change Type**: `test`
+- **Summary**: Added `tests/test_scheduler_client.py` with 6 tests covering success with files, empty files, HTTP error propagation, request body correctness, URL correctness, and skip_checkpoints default.
+- **Context / Motivation**: Step 20 of translator implementation plan. Completes the client test coverage needed before Executor tests (Step 22).
+- **Decisions Made**: Followed established test pattern from `test_data_collector_client.py` and `test_aggregator_client.py`. Added a 6th test (`test_skip_checkpoints_defaults_to_empty`) to verify the default empty list behavior since skip_checkpoints is a key feature of the scheduler integration.
+- **Lessons**: None new — followed established pattern.
+
+## 2026-03-12: Verify and mark executor tests as complete
+- **Change Type**: `test`
+- **Context / Motivation**: Step 22 of translator implementation plan — executor tests existed but step was unchecked. Verified all 10 tests pass (full pipeline, partial sections, failure stops execution), ruff clean.
+- **Decisions Made**: No code changes needed; tests were already written and committed. Only the plan needed updating.
+- **Lessons**: None — straightforward verification step.
+
+## 2026-03-12: Write tests for POST /translator/translate route
+- **Change Type**: `test`
+- **Context / Motivation**: Step 23 of translator implementation plan — route-level tests for the translate endpoint covering success (202), parse errors (400), and pydantic validation (422).
+- **Decisions Made**: Used `unittest.mock.patch` on `parse_dsl` to control parser behavior without needing a real DSL grammar. Set `app.state.run_store` and `app.state.executor` as MagicMocks at module level (no lifespan/DB needed). 7 tests total.
+- **Lessons**: None — straightforward route testing with mocks.
+
+## 2026-03-12: Write tests for GET /translator/runs/{run_id} route
+- **Change Type**: `test`
+- **Context / Motivation**: Step 24 of translator implementation plan — route-level tests for the run status endpoint covering found (200 with data and error fields) and not found (404).
+- **Decisions Made**: Same mock pattern as step 23 — `app.state.run_store` as MagicMock, no DB needed. 4 tests: 200 with normal data, 200 with error field, store called with correct run_id, 404 on missing run.
+- **Lessons**: None — straightforward route testing with mocks.
+
+## 2026-03-12: Translator — ruff check and format (Step 25)
+- **Change Type**: `chore`
+- **Summary**: Ran ruff check and ruff format on all 24 translator Python files. All passed clean with no changes needed.
+- **Context / Motivation**: Code quality gate before README and end-to-end integration steps.
+- **Decisions Made**: None — all files were already compliant.
+- **Lessons**: None — clean pass.
+
+## 2026-03-12: Add translator to end-to-end docker-compose
+- **Change Type**: `feat`
+- **Summary**: Added `postgres_translator` and `translator` services to `src/infrastructure/compose/docker-compose.yml`, wiring the translator to all downstream services on the shared network.
+- **Context / Motivation**: Step 27 of the translator implementation plan. Without this, the translator cannot participate in full pipeline runs.
+- **Decisions Made**: Used `service_started` for data_collector and scheduler (no healthchecks defined), `service_healthy` for aggregator and postgres_translator. Port 5435 for translator Postgres, 8005 for the translator service.
+- **Lessons**: None — straightforward wiring following existing patterns in the compose file.
+
+## 2026-03-12
+- **Change Type**: `docs`
+- **Summary**: Created `src/translator/README.md` with service description, endpoints, configuration, and run/test commands.
+- **Context / Motivation**: Step 26 of the translator implementation plan. Final step to complete the translator service documentation per `service_readme.md` rule.
+- **Decisions Made**: Kept it minimal — service purpose, endpoint table, config table, docker compose commands. No DSL grammar docs since the parser is still a placeholder.
+- **Lessons**: None.
+
+---
+
+## 2026-03-12
+
+- **Change Type**: `feat`
+- **Summary**: Implemented `parse_dsl` in `src/translator/src/services/dsl_parser.py`, replacing the `NotImplementedError` stub with a working key=value grammar parser. Updated tests from 3 stub tests to 29 comprehensive parsing tests.
+- **Context / Motivation**: Step 28 of the translator implementation plan. The DSL parser was the last non-functional piece — without it the entire translator service couldn't process any input.
+- **Decisions Made**: Simple key=value grammar (`SECTION key=val key=[a,b];`) — no parser combinator library needed. Pydantic handles field validation after parsing. Case-insensitive keywords. Duplicate/unknown sections raise `ValueError`.
+- **Lessons**: None.
+
+## 2026-03-13: Translator pyproject.toml setup
+- **Change Type**: feat
+- **Summary**: Updated `src/translator/pyproject.toml` with correct dependencies — `psycopg[binary]>=3.2.0` (replacing `psycopg2-binary`), added `pytest-asyncio` and `testcontainers` dev deps. Verified with `uv sync`.
+- **Context / Motivation**: Step 1 of translator service implementation plan. Foundation for all subsequent translator work.
+- **Decisions Made**: Used `psycopg[binary]` (psycopg3) over `psycopg2-binary` — modern async-capable driver. Followed aggregator's pyproject.toml pattern.
+- **Lessons**: Previous implementation existed and was reset. Checked git diff before committing to avoid staging unrelated deletions.
+
+## 2026-03-13: Add TranslateRequest model to translator service
+- **Change Type**: `feat`
+- **Summary**: Created `TranslateRequest` pydantic model with `dsl: str` field (min_length=1, frozen) and corresponding tests.
+- **Context / Motivation**: Step 2 of translator service implementation plan. Foundation model needed before routes and executor can be built.
+- **Decisions Made**: Used `ConfigDict(frozen=True)` matching existing service style. Added `min_length=1` to reject empty DSL strings at validation boundary.
+- **Lessons**: None new — followed existing patterns from aggregator/data_collector models.
+
+## 2026-03-13T22:08 — TranslateResponse model
+- **Change Type**: `feat`
+- **Summary**: Created `TranslateResponse` pydantic model with `run_id: UUID` field (frozen) and corresponding tests.
+- **Context / Motivation**: Step 3 of translator service implementation plan. Response model for `POST /translator/translate` (202 Accepted).
+- **Decisions Made**: Frozen model since it's a read-only DTO. Tests cover construction, serialization, and immutability.
+- **Lessons**: None new — straightforward model following same pattern as TranslateRequest.
+
+## 2026-03-13: Add RunStatusResponse model
+- **Date**: 2026-03-13T22:09+01:00
+- **Change Type**: `feat`
+- **Summary**: Created `RunStatusResponse` pydantic model with `run_id`, `phase` (Literal-constrained), and `error` fields. Added `RunPhase` type alias.
+- **Context / Motivation**: Step 4 of translator service implementation plan. Response model for `GET /translator/runs/{run_id}`.
+- **Decisions Made**: Used `Literal` type alias instead of bare `str` for phase — catches invalid phase values at validation time. Included `pending` phase from execution flow spec even though the GET endpoint docs only list 5 phases.
+- **Lessons**: None new — straightforward model addition.
+
+## 2026-03-13T22:11 — Step 5: DSL command dataclasses
+
+- **Change Type**: `feat`
+- **Summary**: Created frozen dataclasses (`CollectCommand`, `AnalyzeCommand`, `AggregateCommand`, `ParsedDSL`) in `src/translator/src/services/parser.py`. 13 tests in `test_parser.py`.
+- **Context / Motivation**: Step 5 of translator service implementation plan. These are the internal data structures that the DSL parser will produce and the HTTP client/executor will consume. Foundation for all subsequent translator steps.
+- **Decisions Made**: Used `dataclass(frozen=True, slots=True)` instead of Pydantic — these are simple internal containers without validation needs, per the data models rule. `year`/`month` typed as `int | dict[str, int]` to support both single values and ranges matching the downstream `CollectRequest` contract.
+- **Lessons**: None new — straightforward dataclass creation.
+
+## 2026-03-13: Add parse_dsl() placeholder function
+- **Change Type**: `feat`
+- **Summary**: Added `parse_dsl()` to `src/translator/src/services/parser.py` — JSON-based placeholder parser that returns `ParsedDSL` or raises `ValueError`.
+- **Context / Motivation**: Step 6 of translator service implementation plan. The DSL grammar is marked TODO in the spec, so a JSON placeholder enables downstream steps (executor, routes) to be built against a stable interface.
+- **Decisions Made**: Used JSON as interim format because it maps 1:1 to the existing dataclasses and is trivially replaceable. Kept `import json` inside the function body since it's a placeholder — will move to top-level when the real parser replaces it.
+- **Lessons**: None new.
+
+## 2026-03-13: Translator database module
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/services/db.py` with `init_db`, `create_run`, `get_run`, `update_run` functions using psycopg3.
+- **Context / Motivation**: Step 7 of translator service implementation plan. Foundation for run state persistence — executor, routes, and app all depend on this module.
+- **Decisions Made**: Used psycopg3 (not psycopg2 like scheduler) since that's what's in pyproject.toml. Module-level functions with connection passed as parameter, matching scheduler's pattern. `get_run` returns `dict | None` using `dict_row` factory. No separate config module — `database_url` accepted as parameter with default.
+- **Lessons**: None new.
+
+## 2026-03-13: Translator HTTP client for downstream services
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/services/http_client.py` with `call_collector`, `call_scheduler`, `call_aggregator` functions. Also created `src/translator/src/services/config.py` with pydantic-settings.
+- **Context / Motivation**: Step 8 of translator service implementation plan. The executor (Step 9) needs these functions to dispatch parsed DSL commands to downstream services.
+- **Decisions Made**: Created a config module with pydantic-settings (matching aggregator pattern) rather than hardcoding URLs. Default ports match the end-to-end compose (collector:8010, scheduler:8011, aggregator:8014). 300s timeout default since downstream operations (data collection, analysis) are long-running. Each function opens/closes its own httpx.Client context manager per the project HTTP client rule.
+- **Lessons**: None new.
+
+## 2026-03-13: Translator executor module
+- **Date**: 2026-03-13T22:22+01:00
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/services/executor.py` with `execute_run()` that orchestrates COLLECT → ANALYZE → AGGREGATE pipeline. 8 unit tests covering full pipeline, partial DSL, and failure scenarios.
+- **Context / Motivation**: Step 9 of translator service implementation plan. The executor is the core orchestration logic — routes (Steps 10-11) and the app (Step 12) depend on it.
+- **Decisions Made**: Split into `execute_run` (top-level exception handler) and `_execute_steps` (sequential logic) to keep the try/except boundary clean. Each phase update opens its own DB connection since the executor runs in a background thread. Empty aggregator response (falsy `[]` or `{}`) triggers a `412 Precondition Failed` error per spec.
+- **Lessons**: None new.
+
+## 2026-03-13: Add POST /translator/translate route
+- **Change Type**: `feat`
+- **Summary**: Created `POST /translator/translate` endpoint in `src/translator/src/server/routes.py`. Parses DSL (400 on ValueError), creates DB run record, spawns background thread for execution, returns 202 with run_id.
+- **Context / Motivation**: Step 10 of translator service implementation plan — first route, wiring parser + DB + executor together.
+- **Decisions Made**: Used `threading.Thread(daemon=True)` for background execution (matches executor pattern from Step 9). Route manages its own DB connection via `get_connection` context manager rather than FastAPI `Depends()` since the connection is only needed for `create_run`, not the full request lifecycle.
+- **Lessons**: None new — straightforward wiring step.
+
+## 2026-03-13: Add GET /translator/runs/{run_id} route
+- **Change Type**: `feat`
+- **Summary**: Created `GET /translator/runs/{run_id}` endpoint in `src/translator/src/server/routes.py`. Fetches run by UUID, returns `RunStatusResponse` (200) or 404 if not found.
+- **Context / Motivation**: Step 11 of translator service implementation plan — completes the API surface so callers can poll for async run status.
+- **Decisions Made**: Same DB connection pattern as POST route (`get_connection` context manager, not `Depends()`). Maps raw dict from `get_run()` to `RunStatusResponse` model explicitly for type safety.
+- **Lessons**: None new — straightforward endpoint addition.
+
+## 2026-03-13: Translator FastAPI main.py entrypoint
+- **Date**: 2026-03-13T22:29+01:00
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/src/server/main.py` — FastAPI app entrypoint with async lifespan, DB init on startup, health endpoint, and router wiring.
+- **Context / Motivation**: Step 12 of translator service implementation plan. This is the integration point that connects all previously built components (routes, DB, config) into a runnable service.
+- **Decisions Made**: Used `main.py` (not `app.py`) per `fastapi_main_entrypoint.md` rule. Added `health_router` to `routes.py` following the aggregator service pattern. Used `@asynccontextmanager` for lifespan (lesson from 2026-03-09 about sync lifespan crashing uvicorn).
+- **Lessons**: None new — straightforward wiring step.
+
+## 2026-03-13
+
+- **Date**: 2026-03-13T22:31+01:00
+- **Change Type**: `feat`
+- **Summary**: Created `src/translator/Dockerfile` — Docker image definition for the translator service.
+- **Context / Motivation**: Step 13 of translator service implementation plan. Dockerfile is the critical path blocker for docker-compose (Step 14) and all test execution (Steps 15-20).
+- **Decisions Made**: Followed aggregator Dockerfile pattern exactly. Port 8015 matches `config.py` SERVER_PORT default.
+- **Lessons**: None new — straightforward pattern replication.
+
+## 2026-03-13: Translator docker-compose.yml
+- **Change Type**: `feat`
+- **Summary**: Created `src/infrastructure/translator/docker-compose.yml` with translator service + Postgres 16-alpine.
+- **Context / Motivation**: Step 14 of translator implementation plan. Blocker for all test steps (15-20) since docker-execution rule requires all code execution via docker compose.
+- **Decisions Made**: Used host port 5436 to avoid conflicts with existing services (scheduler:5432, api_server:5433, compose:5434/5435). Followed aggregator compose pattern.
+- **Lessons**: None new — straightforward infrastructure task.
+
+## 2026-03-13: Add RunStatusResponse tests to test_models.py
+- **Change Type**: `test`
+- **Summary**: Completed Step 15 — added `TestRunStatusResponse` class with 10 new tests (16 total in file).
+- **Context / Motivation**: Model tests are the foundation for the translator service test suite. The file already had tests for `TranslateRequest` and `TranslateResponse` but was missing `RunStatusResponse` coverage.
+- **Decisions Made**: Used `pytest.mark.parametrize` for all 6 phase values to avoid repetitive test methods. Tested frozen immutability, error field, invalid phase rejection, and serialization.
+- **Lessons**: None new — straightforward test addition.
+
+## 2026-03-13T22:37+01:00
+- **Change Type**: `test`
+- **Summary**: Completed Step 16 — added 25 parser tests in `src/translator/tests/test_parser.py`.
+- **Context / Motivation**: Parser is the core component of the translator service; all downstream execution depends on correct parsing. Tests validate the JSON-based placeholder parser against all valid/invalid input patterns.
+- **Decisions Made**: Organized into three test classes (valid, invalid, dataclass properties). Covered edge cases: year/month ranges, whitespace trimming, missing required fields per section, non-object JSON types.
+- **Lessons**: None new — straightforward test addition.
+
+## 2026-03-13
+
+**Summary**: Scaffolded translator service with pyproject.toml and package structure.
+**Change Type**: feat
+**Context / Motivation**: First step of the translator service implementation plan — project foundation needed before any code can be written.
+**Decisions Made**: Matched aggregator's pyproject.toml pattern (hatchling build backend, src/ layout). Included psycopg[binary] for direct Postgres access (translator owns its own `translator_runs` table). Created empty `__init__.py` files for all packages to make the structure immediately usable.
+**Lessons**: None new — applied existing lesson about hatchling + src/ layout from 2026-02-28.
+
+## 2026-03-13: TranslateRequest model
+- **Change Type**: `feat`
+- **Summary**: Created `TranslateRequest` Pydantic model in `src/translator/src/server/models.py` with `dsl: str` field, `min_length=1` validation, and frozen config.
+- **Context / Motivation**: Step 2 of translator service implementation plan. Foundational model needed by routes and executor.
+- **Decisions Made**: Used `ConfigDict(frozen=True)` since request models are read-only DTOs. Added `min_length=1` to reject empty DSL at validation boundary.
+- **Lessons**: None new.
+
+## 2026-03-13: Add TranslateResponse model
+- **Change Type**: `feat`
+- **Summary**: Added `TranslateResponse` Pydantic model with `run_id: UUID` field to `src/translator/src/server/models.py`.
+- **Context / Motivation**: Step 3 of translator service implementation plan. Required for the `POST /translator/translate` endpoint (Step 10).
+- **Decisions Made**: Frozen ConfigDict for immutability, matching `TranslateRequest` pattern. UUID type accepts both native UUID and string coercion.
+- **Lessons**: None — straightforward model addition.
+
+## 2026-03-13: Add RunStatusResponse model to translator service
+- **Change Type**: `feat`
+- **Summary**: Added `RunStatusResponse` Pydantic model with `RunPhase` Literal type alias to `src/translator/src/server/models.py`.
+- **Context / Motivation**: Step 4 of translator service implementation plan — model needed for `GET /translator/runs/{run_id}` endpoint.
+- **Decisions Made**: Used `Literal` type alias instead of `Enum` for `RunPhase` — simpler, no serialization overhead, compile-time safety via type checkers. Frozen `ConfigDict` for immutability matching existing models.
+- **Lessons**: None new — straightforward model addition.
+
+## 2026-03-13: Translator DSL command dataclasses (Step 5)
+- **Change Type**: `feat`
+- **Summary**: Created `CollectCommand`, `AnalyzeCommand`, `AggregateCommand`, and `ParsedDSL` Pydantic models in `src/translator/src/services/parser.py`.
+- **Context / Motivation**: Step 5 of translator service implementation plan — these are the structured command types that the DSL parser will produce and the executor/HTTP client will consume.
+- **Decisions Made**: Used `int | dict[str, int]` for year/month to support both single values and `{from, to}` ranges matching data collector's `YearField`/`MonthField`. All models frozen since they're value objects. `skip_checkpoints` and `params` default to empty collections via `Field(default_factory=...)`.
+- **Lessons**: None new — straightforward model creation following existing patterns.
+
+## 2026-03-13: Add parse_dsl() JSON-based placeholder parser
+- **Change Type**: `feat`
+- **Summary**: Implemented `parse_dsl()` in `src/translator/src/services/parser.py` — JSON-based placeholder that converts DSL strings into `ParsedDSL` with optional collect/analyze/aggregate sections.
+- **Context / Motivation**: Step 6 of translator service implementation plan. The parser is the core dependency for the executor (Step 9) and routes (Steps 10-11). Grammar is marked TODO in spec, so JSON placeholder is appropriate.
+- **Decisions Made**: Used JSON as the placeholder format since it maps directly to the Pydantic models. Validation delegates to Pydantic for field-level checks; `parse_dsl` only handles JSON parsing and "at least one section" validation. Extra keys in the JSON are silently ignored (forward-compatible).
+- **Lessons**: None new — straightforward implementation.
+
+## 2026-03-13: Translator database module (Step 7)
+- **Change Type**: `feat`
+- **Summary**: Created `db.py` with `init_db`, `create_run`, `get_run`, `update_run` using psycopg3. Created minimal `config.py` with `DATABASE_URL` setting.
+- **Context / Motivation**: Step 7 of translator service implementation plan — database module is the critical-path blocker for executor, routes, and main app.
+- **Decisions Made**: Used psycopg3 (not psycopg2) since `psycopg[binary]` was already in deps. All functions accept `conn` as first arg (caller manages connection lifecycle). Created minimal config.py with only DB-related settings — Step 8 will extend with service URLs. Used `dict_row` for `get_run` to return dicts directly.
+- **Lessons**: Previous versions of config.py and db.py already existed (created during incomplete Step 8 attempt). Subagent reported config.py as missing — always verify with `git status` before assuming files don't exist. See [lessons.md](lessons.md).
+
+## 2026-03-13: Translator HTTP client for downstream services
+- **Change Type**: `feat`
+- **Summary**: Created `http_client.py` with `call_collector`, `call_scheduler`, `call_aggregator` functions and updated `config.py` with service URLs/timeout.
+- **Context / Motivation**: Step 8 of translator implementation plan — HTTP client is the dependency for the executor (Step 9) which orchestrates the full pipeline.
+- **Decisions Made**: Single module with three functions (not three separate client files). Used `httpx.Client` context manager with `verify=False` per project convention. Return raw `dict` from response JSON — let the executor decide what to do with it. 300s timeout default matches analyzer lesson.
+- **Lessons**: Applied lesson 2026-03-12 (monkeypatch httpx.Client.__init__, pop verify, inject transport) for clean test mocking.
+
+## 2026-03-13: Translator executor — background pipeline orchestration
+- **Change Type**: `feat`
+- **Summary**: Created `executor.py` with `execute_run()` that sequences COLLECT → ANALYZE → AGGREGATE downstream calls, updating run phase in Postgres at each step.
+- **Context / Motivation**: Step 9 of translator service implementation plan. The executor is the core orchestration logic that routes, app entrypoint, and all downstream steps depend on.
+- **Decisions Made**: Single function design (no class) — the executor has no state beyond what's in Postgres. Error handling opens a fresh DB connection in the except block to avoid using a potentially broken connection from the try block. Empty aggregator response (dict or list) treated as 412 per spec.
+- **Lessons**: None new — existing patterns from http_client and db modules applied cleanly.
+
+---
+
+### 2026-03-13T23:15 — Step 10: POST /translator/translate route
+- **Change Type**: `feat`
+- **Summary**: Created `routes.py` with `POST /translator/translate` endpoint and `GET /health` health check, following the aggregator router pattern.
+- **Context / Motivation**: Step 10 of translator service implementation plan. This is the entry point that ties together parser, DB, and executor — all downstream steps (GET route, main.py, route tests) depend on it.
+- **Decisions Made**: Used daemon thread for background execution (matches executor design). Parse errors raise `HTTPException(400)` synchronously before run creation, so invalid DSL never creates a DB record. Health endpoint on separate `health_router` (no prefix) matching aggregator pattern.
+- **Lessons**: None new — straightforward wiring of existing modules.
+
+## 2026-03-13: Translator GET /runs/{run_id} endpoint
+- **Date**: 2026-03-13T23:18+01:00
+- **Change Type**: `feat`
+- **Summary**: Added `GET /translator/runs/{run_id}` endpoint to `routes.py` — fetches run status from Postgres, returns `RunStatusResponse` or 404.
+- **Context / Motivation**: Step 11 of translator service implementation plan. Without this endpoint, clients cannot poll for async run status after calling `POST /translate`. Unblocks Step 12 (app wiring).
+- **Decisions Made**: Surgical addition — only added the new route function plus required imports (`UUID`, `RunStatusResponse`, `get_run`). No changes to existing code. Matched existing style (sync handler, `get_connection()` context manager, explicit keyword args).
+- **Lessons**: None new — straightforward endpoint wiring.
+
+## 2026-03-13: Translator FastAPI app entrypoint (Step 12)
+- **Change Type**: fix
+- **Summary**: Fixed and finalized `src/translator/src/server/main.py` — async lifespan with DB init, route wiring, bug fix for non-existent `SETTINGS.LOG_LEVEL`.
+- **Context / Motivation**: Step 12 of translator implementation plan. The file existed from a prior session but had a bug referencing `SETTINGS.LOG_LEVEL` which doesn't exist in `config.py`.
+- **Decisions Made**: Used `logging.INFO` directly instead of adding a `LOG_LEVEL` setting to config (prompt scope only — config changes weren't requested). Removed redundant `database_url=` kwarg since `get_connection()` defaults to `SETTINGS.DATABASE_URL`.
+- **Lessons**: Subagent reported file as missing when it existed (reinforces 2026-03-13 lesson). Always verify with `fs_read` or `git status` before using `fs_write create`.
+
+## 2026-03-13: Translator Dockerfile + docker-compose verification and fix
+- **Change Type**: fix
+- **Summary**: Verified existing Dockerfile builds, restored deleted docker-compose.yml with corrected env var names (HTTP_TIMEOUT instead of REQUEST_TIMEOUT, removed unused LOG_LEVEL).
+- **Context / Motivation**: Steps 13-14 of translator implementation plan were already implemented in previous sessions but not marked complete. The docker-compose.yml was deleted from disk and had env var mismatches with the Settings class.
+- **Decisions Made**: Fixed env var name to match `Settings.HTTP_TIMEOUT` rather than adding a new alias. Removed `LOG_LEVEL` since it's not in Settings (no-op env var is misleading).
+- **Lessons**: Previous sessions committed files that were later deleted from the working tree without committing the deletion — always check `git status` before assuming a file needs creation.
+
+## 2026-03-13: Translator model tests (Step 15)
+- **Change Type**: test
+- **Summary**: Added 21 unit tests for translator request/response models (TranslateRequest, TranslateResponse, RunStatusResponse).
+- **Context / Motivation**: Step 15 of translator implementation plan — model tests are foundational and the first uncompleted test step.
+- **Decisions Made**: Used parametrize for all 6 RunPhase values. Tested frozen enforcement, UUID coercion, serialization, and validation boundaries. 21 new tests, 61 total passing.
+- **Lessons**: None new — straightforward Pydantic model testing.
+
+## 2026-03-13: Translator DB integration tests
+- **Change Type**: `test`
+- **Summary**: Added 7 integration tests for translator DB operations (create_run, get_run, update_run) plus shared conftest fixture.
+- **Context / Motivation**: Step 17 of translator implementation plan — DB module had zero test coverage despite being on the critical path for all features.
+- **Decisions Made**: Used docker-compose Postgres instead of TestContainers (per lesson 2026-03-01). Pre/post-test cleanup via DELETE to handle persistent DB between runs.
+- **Lessons**: None new — applied existing lessons correctly.
+
+## 2026-03-13: Add POST /translator/translate route tests
+- **Change Type**: `test`
+- **Summary**: Created `src/translator/tests/test_routes.py` with 6 tests for the POST /translator/translate endpoint.
+- **Context / Motivation**: Step 19 of translator service implementation plan — route-level tests validate the HTTP contract (status codes, error messages, background thread spawning).
+- **Decisions Made**: Module-level patching of lifespan DB calls to avoid needing Postgres for route tests. Fixture-based patching for route-level mocks (get_connection, create_run, Thread). Tested both parse errors (400) and pydantic validation errors (422) separately.
+- **Lessons**: None new — existing patterns from test_executor.py applied cleanly.
+
+## 2026-03-13: Expand translator parser tests to 25
+- **Change Type**: `test`
+- **Summary**: Added 3 tests to `test_parser.py`: whitespace-around-dsl valid input, collect year wrong type invalid input, AnalyzeCommand frozen immutability.
+- **Context / Motivation**: Step 16 of translator implementation plan required 25 tests; existing file had 22.
+- **Decisions Made**: Added minimal tests covering the 3 missing categories (whitespace, wrong type, frozen for AnalyzeCommand) rather than restructuring existing tests.
+- **Lessons**: None new — straightforward test expansion.
+
+## 2026-03-13: Translator Step 18 — Executor tests enhanced
+- **Date**: 2026-03-13T23:37+01:00
+- **Change Type**: `test`
+- **Summary**: Enhanced executor tests with phase transition assertions and added 3 new tests (11 total, 80 translator tests).
+- **Context / Motivation**: Step 18 of translator plan required verifying phase transitions (collecting→analyzing→aggregating→completed), not just that HTTP clients were called.
+- **Decisions Made**: Enhanced existing 4 tests to patch `update_run` and assert phase sequences. Added tests for: correct command passing, collect failure skipping later steps, empty aggregator never reaching completed. Kept existing failure/412 tests unchanged (already had proper assertions).
+- **Lessons**: None new — straightforward test enhancement.
+
+## 2026-03-13: Step 20 — GET /translator/runs/{run_id} route tests
+
+- **Date**: 2026-03-13T23:40+01:00
+- **Change Type**: `test`
+- **Summary**: Added 2 tests for the GET run status route (existing run → 200, unknown run_id → 404). 82 translator tests total.
+- **Context / Motivation**: Step 20 of translator plan — complete route test coverage before final cleanup steps.
+- **Decisions Made**: Used per-test mock setup (same pattern as `test_spawns_background_thread`) rather than a shared fixture, since GET route needs different mocks than POST route.
+- **Lessons**: None new — straightforward addition.

@@ -19,6 +19,19 @@ _STEP_TO_BUCKET_ATTR: dict[str, str] = {
 }
 
 
+def validate_step_names(*, step_names: list[str]) -> list[str]:
+    """Return any step names not in the valid STEPS list.
+
+    Args:
+        step_names: List of step names to validate.
+
+    Returns:
+        List of invalid step names. Empty if all are valid.
+    """
+    valid = set(STEPS)
+    return [name for name in step_names if name not in valid]
+
+
 def get_input_bucket(*, step: str, settings: Settings) -> str:
     """Resolve the input bucket for a pipeline step from config.
 
@@ -63,3 +76,6 @@ if __name__ == "__main__":
     print(f"next after []: {get_next_step(completed_steps=[])}")
     print(f"next after first two: {get_next_step(completed_steps=STEPS[:2])}")
     print(f"next after all: {get_next_step(completed_steps=STEPS)}")
+
+    invalid = validate_step_names(step_names=["data_cleaning", "bogus", "fake"])
+    print(f"invalid step names: {invalid}")

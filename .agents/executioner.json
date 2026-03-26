@@ -21,8 +21,7 @@
     "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/plan_context_estimation.md",
     "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/service_readme.md",
     "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/single_task_execution.md",
-    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/atomic_plan_tasks.md",
-    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/specs_required.md",
+    "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/plan_execution_efficiency.md",
     "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/rules/file_lookup.md",
     "file:////home/elevgeo/personal/repos/ralph_experimentation/thesis/.kiro/steering/lessons.md",
     "file:////home/elevgeo/.kiro/agents/global_rules/generic/prompt_scope_only.md",
@@ -58,7 +57,16 @@
         "**/.git/**"
       ]
     },
-    "subagent": {}
+    "subagent": {
+      "availableAgents": [
+        "dora",
+        "alfred"
+      ],
+      "trustedAgents": [
+        "dora",
+        "alfred"
+      ]
+    }
   },
   "useLegacyMcpJson": true,
   "model": "claude-opus-4.6"

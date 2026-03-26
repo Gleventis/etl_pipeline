@@ -36,6 +36,27 @@ class TestScheduleRequest:
         with pytest.raises(ValidationError):
             ScheduleRequest(bucket="raw-data", objects=[])
 
+    def test_skip_checkpoints_defaults_to_empty(self) -> None:
+        req = ScheduleRequest(bucket="raw-data", objects=["file1.parquet"])
+        assert req.skip_checkpoints == []
+
+    def test_skip_checkpoints_accepts_valid_steps(self) -> None:
+        req = ScheduleRequest(
+            bucket="raw-data",
+            objects=["file1.parquet"],
+            skip_checkpoints=["data_cleaning", "temporal_analysis"],
+        )
+        assert req.skip_checkpoints == ["data_cleaning", "temporal_analysis"]
+
+    def test_skip_checkpoints_serialization(self) -> None:
+        req = ScheduleRequest(
+            bucket="raw-data",
+            objects=["file1.parquet"],
+            skip_checkpoints=["descriptive_statistics"],
+        )
+        data = req.model_dump()
+        assert data["skip_checkpoints"] == ["descriptive_statistics"]
+
 
 class TestScheduleResponse:
     """Tests for ScheduleResponse model."""

@@ -30,6 +30,7 @@ def _setup_schema(database_url: str):
 def _clean_tables(database_url: str):
     """Clean all tables before each test."""
     with get_session(database_url=database_url) as session:
+        session.execute(text("DELETE FROM step_dependencies"))
         session.execute(text("DELETE FROM analytical_results"))
         session.execute(text("DELETE FROM job_executions"))
         session.execute(text("DELETE FROM files"))
@@ -1388,6 +1389,195 @@ class TestGetRecoveryTime:
         # avg_saved = 500 - 150 = 350
         assert body["avg_time_saved_seconds"] == 350.0
         assert body["percent_improvement"] == 70.0
+
+
+class TestPostStepDependencies:
+    """Tests for POST /step-dependencies."""
+
+    def test_inserts_edges_returns_200(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-001",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                    {
+                        "step_name": "temporal_analysis",
+                        "depends_on_step_name": "data_cleaning",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["inserted"] == 2
+
+    def test_inserts_single_edge(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-002",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["inserted"] == 1
+
+    def test_rejects_empty_edges(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-003",
+                "edges": [],
+            },
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_rejects_empty_pipeline_run_id(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_rejects_empty_step_name(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-004",
+                "edges": [
+                    {
+                        "step_name": "",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_rejects_empty_depends_on_step_name(self, client: TestClient) -> None:
+        response = client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-005",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "",
+                    },
+                ],
+            },
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+class TestGetStepDependencies:
+    """Tests for GET /step-dependencies/{pipeline_run_id}."""
+
+    def test_returns_edges_for_known_pipeline_run(self, client: TestClient) -> None:
+        client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-get-001",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                    {
+                        "step_name": "temporal_analysis",
+                        "depends_on_step_name": "data_cleaning",
+                    },
+                ],
+            },
+        )
+
+        response = client.get("/step-dependencies/run-get-001")
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["pipeline_run_id"] == "run-get-001"
+        assert len(body["edges"]) == 2
+        edge_tuples = {
+            (e["step_name"], e["depends_on_step_name"]) for e in body["edges"]
+        }
+        assert ("data_cleaning", "descriptive_statistics") in edge_tuples
+        assert ("temporal_analysis", "data_cleaning") in edge_tuples
+
+    def test_returns_404_for_unknown_pipeline_run(self, client: TestClient) -> None:
+        response = client.get("/step-dependencies/nonexistent-run")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_returns_single_edge(self, client: TestClient) -> None:
+        client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-get-002",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                ],
+            },
+        )
+
+        response = client.get("/step-dependencies/run-get-002")
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert body["pipeline_run_id"] == "run-get-002"
+        assert len(body["edges"]) == 1
+        assert body["edges"][0]["step_name"] == "data_cleaning"
+        assert body["edges"][0]["depends_on_step_name"] == "descriptive_statistics"
+
+    def test_does_not_return_edges_from_other_pipeline_run(
+        self, client: TestClient
+    ) -> None:
+        client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-get-003a",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                ],
+            },
+        )
+        client.post(
+            "/step-dependencies",
+            json={
+                "pipeline_run_id": "run-get-003b",
+                "edges": [
+                    {
+                        "step_name": "temporal_analysis",
+                        "depends_on_step_name": "data_cleaning",
+                    },
+                ],
+            },
+        )
+
+        response = client.get("/step-dependencies/run-get-003a")
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert len(body["edges"]) == 1
+        assert body["edges"][0]["step_name"] == "data_cleaning"
 
 
 if __name__ == "__main__":

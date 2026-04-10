@@ -192,6 +192,46 @@ def update_file(
         )
 
 
+def persist_step_dependencies(
+    *,
+    api_server_url: str,
+    pipeline_run_id: str,
+    edges: list[tuple[str, str]],
+) -> None:
+    """Persist DAG edges to the API Server.
+
+    Args:
+        api_server_url: Base URL of the API Server.
+        pipeline_run_id: Unique identifier for the pipeline run.
+        edges: Dependency edges as (step_name, depends_on_step_name) tuples.
+
+    Raises:
+        httpx.HTTPStatusError: If the API Server returns an error status.
+        httpx.HTTPError: If a network error occurs.
+    """
+    with httpx.Client(base_url=api_server_url, verify=False) as client:
+        response = client.post(
+            url="/step-dependencies",
+            json={
+                "pipeline_run_id": pipeline_run_id,
+                "edges": [
+                    {
+                        "step_name": step_name,
+                        "depends_on_step_name": depends_on,
+                    }
+                    for step_name, depends_on in edges
+                ],
+            },
+            timeout=25.0,
+        )
+        response.raise_for_status()
+        logger.info(
+            "persisted step dependencies: pipeline_run_id=%s, edge_count=%d",
+            pipeline_run_id,
+            len(edges),
+        )
+
+
 if __name__ == "__main__":
     fid = create_file_record(
         api_server_url="http://localhost:8000",

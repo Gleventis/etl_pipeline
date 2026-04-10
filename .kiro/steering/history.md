@@ -2034,3 +2034,282 @@
 - **Context / Motivation**: Step 20 of translator plan — complete route test coverage before final cleanup steps.
 - **Decisions Made**: Used per-test mock setup (same pattern as `test_spawns_background_thread`) rather than a shared fixture, since GET route needs different mocks than POST route.
 - **Lessons**: None new — straightforward addition.
+
+## 2026-03-13: Translator Step 21 — ruff check + format
+- **Change Type**: `chore`
+- **Summary**: Ran ruff check and ruff format on all 19 translator Python files. All passed clean. Removed 15 orphaned old implementation files.
+- **Context / Motivation**: Quality gate step before final README. Old files (dsl_parser.py, run_store.py, etc.) were replaced during steps 1-20 but deletions were never committed.
+- **Decisions Made**: Committed the orphaned file deletions alongside the ruff verification since they were already deleted on disk.
+- **Lessons**: None new — straightforward quality gate step.
+
+## 2026-03-13: Translator service README
+- **Change Type**: `docs`
+- **Summary**: Created `src/translator/README.md` with endpoints, configuration, DSL example, and run/test commands.
+- **Context / Motivation**: Final step (Step 22) of the translator service implementation plan. Follows `service_readme.md` rule.
+- **Decisions Made**: Followed aggregator README pattern for consistency across services.
+- **Lessons**: None — straightforward documentation task.
+
+## 2026-03-20 — Created specs/overview.md
+- **Change Type**: docs
+- **Summary**: Created project overview document summarizing the thesis ETL pipeline architecture, all 6 services, infrastructure, data flow, analytical steps, tech stack, and glossary.
+- **Context / Motivation**: User requested a high-level overview document in the specs directory.
+- **Decisions Made**: Used alfred subagent for documentation generation. Included all 13 standard spec sections (overview, dependencies, data sources, API & endpoints, processing flow, error handling, validation, security, configuration, tech stack, testing, performance, glossary).
+- **Lessons**: None.
+
+## 2026-03-20 — Reframed specs/overview.md thesis scope
+- **Change Type**: docs
+- **Summary**: Updated overview to frame the thesis as checkpointing in distributed systems (not pipelines specifically). The ETL pipeline is the research vehicle, not the thesis topic itself.
+- **Context / Motivation**: User clarified the thesis is about checkpointing in distributed systems in general.
+- **Decisions Made**: Surgical edits — updated the Overview section and Glossary entry only. Rest of the document (architecture, endpoints, etc.) remains unchanged since it describes the system accurately.
+- **Lessons**: None.
+
+## 2026-04-09 — Branching pipeline variant spec & implementation plan
+- **Change Type**: docs
+- **Summary**: Updated `specs/branching_pipeline_variant.md` with refined design decisions from discussion. Created `specs/branching_pipeline_variant_implementation_plan.md` with 36 atomic tasks across 11 phases. Updated `specs/README.md` feature entry with plan link.
+- **Context / Motivation**: New feature to add arbitrary DAG-based pipeline topology support, strengthening the thesis contribution by demonstrating checkpointing handles non-trivial topologies (partial branch failure, parallel execution, DAG-aware resume).
+- **Decisions Made**: Dynamic/arbitrary DAG support (not hardcoded); optional `after` field for backward compatibility; normalized `step_dependencies` DB table for DAG edge storage; Xtend generator produces JSON consumed by translator; analytical step names added to ActionTypes enum; only Step rule modified in grammar.
+- **Lessons**: None.
+
+## 2026-04-09: Create dag.py module with topological sort utility
+- **Change Type**: `feat`
+- **Summary**: Added `dag.py` to scheduler services with `topological_sort()` using Kahn's algorithm and `CycleDetectedError` exception. Created 9 unit tests covering linear chains, branching DAGs, diamonds, fan-out, self-loops, and cycle detection.
+- **Context / Motivation**: Foundation for branching pipeline variant (Task 18). All DAG-aware execution, resume, and ready-step logic depends on this module.
+- **Decisions Made**: Used Kahn's algorithm (BFS-based) over DFS-based topological sort — natural cycle detection when result length != input length, no recursion depth concerns.
+- **Lessons**: None new — straightforward implementation.
+
+## 2026-04-09 — `get_ready_steps` DAG utility + tests
+- **Change Type**: `feat`
+- **Summary**: Added `get_ready_steps()` to `dag.py` — returns steps whose dependencies are all satisfied. Created 9 unit tests covering entry points, fan-out, fan-in gating, full completion, and edge cases.
+- **Context / Motivation**: Task 19 + Task 31 from branching pipeline variant plan. This function is the core primitive for Phase 7 (parallel step execution) and Phase 8 (DAG-aware resume).
+- **Decisions Made**: Used keyword-only arguments matching `topological_sort` API style. Builds dependency sets per step and filters with `issubset()` — O(steps × max_deps) which is fine for 5-step pipelines.
+- **Lessons**: None new — straightforward extension of existing dag.py module.
+
+## 2026-04-09 — Task 17: StepDefinition model + ScheduleRequest.steps field
+- **Date**: 2026-04-09T22:58+02:00
+- **Change Type**: `feat`
+- **Summary**: Added `StepDefinition` frozen Pydantic model and optional `steps` field to `ScheduleRequest`, enabling the scheduler to accept DAG pipeline topology.
+- **Context / Motivation**: Task 17 from branching pipeline variant plan. This is the gateway to Phase 7 (DAG-aware flow execution) — without it, none of the parallel execution work can proceed.
+- **Decisions Made**: `StepDefinition` is frozen (immutable DTO). `steps` defaults to `None` for backward compatibility with existing linear pipeline callers. Placed `StepDefinition` in the same `models.py` file rather than a separate module — single-use within the scheduler context.
+- **Lessons**: None new — straightforward model addition.
+
+## 2026-04-09: Add `get_incomplete_with_dependents` to dag.py + unit tests
+- **Change Type**: `feat`
+- **Context / Motivation**: Task 24 + 32 from branching pipeline variant plan. The DAG-aware resume logic (Phase 8) needs a utility to compute which steps still need to run after a partial pipeline failure. This function unblocks Tasks 25, 26, and integration test 35.
+- **Decisions Made**: Implemented as a thin wrapper over `topological_sort` — filters completed steps from the sorted order. This is the minimal correct approach since in a correctly executed pipeline, any step downstream of an incomplete step is also incomplete. No need for explicit graph traversal.
+- **Lessons**: None new — straightforward utility addition following the pattern of Tasks 18/19.
+
+## 2026-04-09: feat — Accept DAG step definitions in process_file_flow
+- **Date**: 2026-04-09T23:07+02:00
+- **Summary**: Added optional `steps` parameter to `process_file_flow` for DAG-aware step ordering.
+- **Change Type**: `feat`
+- **Context / Motivation**: Task 20 from branching pipeline variant plan. This is the gateway to parallel execution (Phase 7). The flow now accepts `list[StepDefinition]` and uses `get_ready_steps` for DAG ordering, `name_to_action` mapping for analyzer dispatch, and `StepDefinition.checkpoint` for checkpoint control. Falls back to linear `STEPS` when `steps=None`.
+- **Decisions Made**: Used three local closures (`_resolve_next`, `_action_for`, `_should_checkpoint`) to cleanly separate DAG vs linear logic without duplicating the main loop. Action names are lowercased from `StepDefinition.action` to match analyzer endpoint expectations. Resume (`start_step`) remains linear-only — DAG-aware resume is Task 25.
+- **Lessons**: None new — clean refactor with full backward compatibility verified by 168 passing tests.
+
+---
+
+## 2026-04-10
+- **Summary**: Implemented parallel step execution in DAG mode using Prefect `execute_step.submit()` with batch-based scheduling.
+- **Change Type**: `feat`
+- **Context / Motivation**: Task 21 from branching pipeline variant plan. The core of the branching pipeline — independent steps (e.g., temporal + geospatial) now run concurrently instead of sequentially. This enables the thesis parallel speedup measurements.
+- **Decisions Made**: Split `process_file_flow` into `_run_dag` (parallel batch) and `_run_linear` (sequential, unchanged). Used batch approach over Prefect `wait_for` for proper failure propagation — if a step fails, downstream steps are never submitted. Checkpoint saves once per batch (not per step) since all steps in a batch share the same completed_steps state. DAG tests switched from `.fn()` to `process_file_flow()` to get Prefect task submission context.
+- **Lessons**: See lessons.md — Prefect `task.submit()` requires flow run context, so tests calling `.fn()` bypass the decorator and can't use `.submit()`. Calling the flow directly works without a Prefect server.
+
+---
+
+## 2026-04-10T14:30 — Task 23: Pass DAG steps from schedule_batch to process_file_flow
+
+- **Summary**: Threaded the optional `steps` DAG definition through `schedule_batch` → `_run_flows_concurrently` → `process_file_flow`.
+- **Change Type**: `feat`
+- **Context / Motivation**: Task 23 from branching pipeline variant plan. The DAG flow execution (Tasks 20-21) was already built, and `ScheduleRequest` already accepted `steps` (Task 17), but `schedule_batch` never forwarded them. This was the missing glue.
+- **Decisions Made**: Added `steps` parameter to both `schedule_batch` and `_run_flows_concurrently`. Updated 3 existing test assertions to include `steps=None`. Added one new test `test_passes_dag_steps_to_flow` verifying DAG forwarding.
+- **Lessons**: None new — straightforward parameter threading.
+
+---
+
+## 2026-04-10: DAG-aware resume_failed with dag_steps persistence
+
+- **Date**: 2026-04-10T14:36+02:00
+- **Summary**: Made `resume_failed` DAG-aware by persisting DAG step definitions in `job_state` and restoring them on resume, so branching pipelines resume only incomplete branches.
+- **Change Type**: `feat`
+- **Context / Motivation**: Tasks 25+26 from branching pipeline variant plan. The DAG execution engine (Tasks 20-21) and `get_incomplete_with_dependents` (Task 24) were done, but `resume_failed` only supported linear mode — it passed `start_step` and reconstructed `completed_steps` from the linear STEPS list, which is wrong for DAG topologies.
+- **Decisions Made**:
+  - Added `dag_steps` JSONB column to `job_state` table to persist the full DAG definition alongside job state. This couples Tasks 25+26 because resume fundamentally requires the stored DAG.
+  - Added `initial_completed_steps` parameter to `process_file_flow` so DAG resume can pass the actual completed steps from the DB instead of reconstructing from a linear index.
+  - `resume_failed` now branches: DAG jobs (where `dag_steps` is not None) get `steps` + `initial_completed_steps`; linear jobs get `start_step` as before.
+  - Per-flow `steps` and `initial_completed_steps` are forwarded via the kwargs dict in `_run_flows_concurrently`, keeping the shared interface minimal.
+  - Used `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for backward compatibility with existing databases.
+- **Lessons**: Tasks 25 and 26 were listed as separate but are tightly coupled — resume can't work without persistence. When plan tasks have circular dependencies, implement them together.
+
+## 2026-04-10: Add StepDependencies SQLAlchemy model
+- **Summary**: Added `StepDependencies` ORM model to API server for storing DAG edges per pipeline run.
+- **Change Type**: `feat`
+- **Context / Motivation**: Branching pipeline variant (Task 10) requires persisting DAG edges so the scheduler can resume partial failures with correct dependency awareness. This model is the foundation for the POST/GET step-dependencies endpoints.
+- **Decisions Made**: Placed model between `JobExecutions` and `AnalyticalResults` in `database.py`. Indexed on `pipeline_run_id` for efficient resume lookups. No foreign key to `job_executions` — edges are stored independently since they represent the pipeline topology, not execution state.
+- **Lessons**: None new — straightforward model addition following existing patterns.
+
+## 2026-04-10
+
+**Summary**: Added `POST /step-dependencies` endpoint for batch-inserting DAG edges when a pipeline run starts.
+**Change Type**: `feat`
+**Context / Motivation**: Task 11 of branching pipeline variant plan — the `StepDependencies` ORM model existed (Task 10) but had no CRUD, routes, or Pydantic models. This endpoint is needed by the scheduler (Task 22) to persist DAG edges at pipeline start.
+**Decisions Made**: Used `/step-dependencies` route path (no `/api/` prefix) to match existing codebase convention. Response is 200 (not 201) per spec — batch insert semantics. No FK validation since `pipeline_run_id` is a free-form string.
+**Lessons**: None new — followed established patterns cleanly.
+
+---
+
+**Date**: 2026-04-10
+**Summary**: Add `GET /step-dependencies/{pipeline_run_id}` endpoint to API server.
+**Change Type**: `feat`
+**Context / Motivation**: Task 12 of branching pipeline variant plan — completes Phase 4 (API Server DAG Storage). The scheduler needs this endpoint to retrieve DAG edges during resume. Unblocks Task 22 (persist DAG edges at pipeline start).
+**Decisions Made**: Returns 404 when no edges found for the pipeline_run_id (per spec). Response shape `{ pipeline_run_id, edges }` matches spec exactly. Added `list_step_dependencies` CRUD function following existing patterns. 4 tests: happy path with multiple edges, 404 for unknown run, single edge, and isolation between pipeline runs.
+**Lessons**: None new — followed established patterns.
+
+---
+
+## 2026-04-10: Persist DAG edges to API server at pipeline start
+**Summary**: Add `persist_step_dependencies()` to scheduler's API server client and call it from `process_file_flow` when DAG edges exist.
+**Change Type**: `feat`
+**Context / Motivation**: Task 22 of branching pipeline variant plan — completes Phase 7 (Scheduler DAG-Aware Flow Execution). The API server already has the POST endpoint (Tasks 11-12); this wires the scheduler to call it at pipeline start so DAG topology is persisted for observability and resume.
+**Decisions Made**: Wrapped the POST call in try/except at the flow level — failure is logged but does not block pipeline execution (per spec). Skipped the POST when `dag_edges` is empty (API requires min 1 edge). Followed existing `api_server_client.py` patterns exactly.
+**Lessons**: None new — followed established patterns.
+
+---
+
+**Date**: 2026-04-10T15:14+02:00
+**Summary**: Add dedicated cycle detection unit tests for `dag.py` (Task 30).
+**Change Type**: `test`
+**Context / Motivation**: Task 30 of branching pipeline variant plan — fills testing gap for cycle detection in the DAG module. Existing `test_dag_topo_sort.py` had cycle tests mixed with ordering tests; this creates a focused file for cycle detection verification.
+**Decisions Made**: Three tests covering the exact verify criteria: direct cycle, self-loop, valid acyclic graph. Kept minimal — no additional edge cases beyond what the plan specified.
+**Lessons**: None new.
+
+## 2026-04-10: Verify backward compatibility — linear fallback when no DAG (Task 27)
+**Summary**: Verified `process_file_flow` correctly falls back to linear `STEPS` when `steps=None`. No code changes needed.
+**Change Type**: `chore`
+**Context / Motivation**: Task 27 of branching pipeline variant plan — backward compatibility safety net for all DAG work in Phases 6-8. Ensures existing linear pipelines are not broken by the DAG additions.
+**Decisions Made**: Ran all 22 prefect flow tests (11 linear + 11 DAG). The fallback was already correctly implemented during Tasks 20-23. The explicit test `test_dag_none_falls_back_to_linear` already existed and passes. Marked task as verification-only.
+**Lessons**: When implementation tasks are done incrementally with good test coverage, backward compatibility verification tasks may require no code changes — just test execution confirmation.
+
+## 2026-04-10T15:21 — Task 13: Add StepDefinition Pydantic model to translator parser
+**Summary**: Added `StepDefinition` model to `src/translator/src/services/parser.py`, mirroring the scheduler's model. 7 unit tests added.
+**Change Type**: `feat`
+**Context / Motivation**: Task 13 of branching pipeline variant plan — Phase 5 (Translator Service). Foundation model needed before `AnalyzeCommand` can carry DAG step definitions to the scheduler.
+**Decisions Made**: Mirrored the scheduler's `StepDefinition` exactly (name, action, checkpoint, after) to keep the contract consistent across services. Placed before `AnalyzeCommand` in parser.py since it will be referenced by it in Task 14.
+**Lessons**: None — straightforward model addition.
+
+## 2026-04-10T15:25 — Task 14: Extend AnalyzeCommand with optional steps field
+
+**Summary**: Added `steps: list[StepDefinition] | None = None` to `AnalyzeCommand` in `src/translator/src/services/parser.py`. 2 tests added.
+**Change Type**: `feat`
+**Context / Motivation**: Task 14 of branching pipeline variant plan — Phase 5 (Translator Service). Enables the translator to pass DAG step definitions through to the scheduler when the DSL includes a `steps` array.
+**Decisions Made**: Used `None` default (not empty list) to distinguish "no DAG provided" (linear fallback) from "empty DAG" (which would be invalid). Field is optional so existing DSL payloads without `steps` continue to work unchanged.
+**Lessons**: None — minimal model extension.
+
+## 2026-04-10 — Tasks 15, 16, 28: Translator steps passthrough verification
+
+- **Change Type**: `feat`
+- **Summary**: Verified that `parse_dsl` and `call_scheduler` already handle the `steps` field correctly via Pydantic. Added two tests to `test_http_client.py` proving `steps` is serialized in the scheduler request body.
+- **Context / Motivation**: Branching pipeline plan requires the translator to forward DAG step definitions from DSL to scheduler. Tasks 13-14 added the models; Tasks 15, 16, 28 verify the data flows through without additional code changes.
+- **Decisions Made**: No code changes to `parser.py` or `http_client.py` — Pydantic's `model_dump()` and `**kwargs` unpacking handle `steps` automatically. Added tests as verification artifacts.
+- **Lessons**: When Pydantic models are extended with optional fields that have defaults, existing serialization/deserialization code often works without modification. Verify before writing code.
+
+## 2026-04-10: Integration test — full branching pipeline execution
+- **Change Type**: `test`
+- **Summary**: Added integration test for DAG-aware pipeline execution with real Postgres state persistence.
+- **Context / Motivation**: Task 34 of branching pipeline variant plan. All core implementation (Phases 4-9) and unit tests (Phase 10) were complete, but no integration test validated the full flow with real database state.
+- **Decisions Made**: Mocked only external HTTP services (analyzer, API server); used real Postgres for `save_job_state`/`get_connection`. Verified concurrency via mock call ordering (adjacent `create_job_execution` calls for temporal + geo). Three focused tests: state persistence, parallel dispatch, and DAG edge persistence.
+- **Lessons**: None new — followed established patterns from `test_database.py` and `test_scheduler.py`.
+
+## 2026-04-10 — Task 35: Integration test for partial branch failure and DAG-aware resume
+
+- **Change Type**: `test`
+- **Summary**: Added integration test verifying partial branch failure (geo fails, temporal succeeds) and DAG-aware resume (only geo + fare re-run).
+- **Context / Motivation**: Task 35 of branching pipeline variant plan. Core resume logic (Tasks 24-26) was implemented but untested at the integration level with real Postgres.
+- **Decisions Made**: Two tests — one for failure state verification, one for resume correctness. Used `_geo_fails` side_effect function to selectively fail geospatial_analysis. Resume test verifies only 2 analyzer dispatches (geo + fare) and final completed state with all 5 steps.
+- **Lessons**: `mock.reset_mock()` does NOT clear `side_effect` or `return_value` by default. Must explicitly set `mock.side_effect = None` before setting a new `return_value`. Added to lessons.md.
+
+## 2026-04-10 — Task 36: Linear pipeline backward compatibility integration test
+
+- **Date**: 2026-04-10T15:55+02:00
+- **Change Type**: `test`
+- **Summary**: Added integration test verifying the linear pipeline (`steps=None`) still works end-to-end after branching pipeline changes.
+- **Context / Motivation**: Task 36 of branching pipeline variant plan. All DAG-aware code paths were tested but the linear fallback needed integration-level verification with real Postgres to confirm no regressions.
+- **Decisions Made**: Three tests — sequential completion with correct DB state, dispatch order verification, and confirmation that `persist_step_dependencies` is never called in linear mode. Followed exact same fixture/mock pattern as existing integration tests.
+- **Lessons**: None new — straightforward test following established patterns.
+
+## 2026-04-10: Add `after` dependency list to Xtext Step grammar rule
+- **Change Type**: `feat`
+- **Summary**: Added optional `after: [step1, step2]` cross-reference list to the `Step` rule in `cflDSL.xtext`, enabling DAG-based pipeline topology declarations.
+- **Context / Motivation**: Branching pipeline variant requires steps to declare explicit dependencies for parallel execution and fan-in/fan-out patterns. This is the foundational grammar change for all subsequent Xtext validation, generator, and integration work.
+- **Decisions Made**: Used Xtext cross-references (`[Step]`) so the IDE resolves step names against other steps in the same workflow. Placed `after` clause immediately after step name, before triggers, since it's a structural concern. Required at least one reference when `after` is present (no empty `after: []`).
+- **Lessons**: None new — straightforward grammar addition.
+
+## 2026-04-10: Add analytical step action types to ActionTypes enum
+- **Date**: 2026-04-10T16:07+02:00
+- **Change Type**: `feat`
+- **Summary**: Added `DESCRIPTIVE_STATISTICS`, `DATA_CLEANING`, `TEMPORAL_ANALYSIS`, `GEOSPATIAL_ANALYSIS`, `FARE_REVENUE_ANALYSIS` to the `ActionTypes` enum in `cflDSL.xtext`.
+- **Context / Motivation**: The branching pipeline variant DSL needs to reference analytical steps by name in step implementations. Without these enum values, the grammar cannot express the 5-step analytical pipeline topology.
+- **Decisions Made**: Appended new values to the existing enum rather than replacing — preserves backward compatibility with existing DSL files that use the original 12 action types.
+- **Lessons**: None new — straightforward enum extension.
+
+---
+
+- **Date**: 2026-04-10T16:11+02:00
+- **Summary**: Added cycle detection validation to translator DSL parser for step dependency graphs.
+- **Change Type**: `feat`
+- **Context / Motivation**: Task 3 of branching pipeline variant plan. Without cycle detection, users could submit DAGs with circular dependencies that would cause the scheduler to hang or crash. The plan specified Xtext validator, but no Eclipse/Xtext project exists — the grammar file is a standalone spec and all runtime parsing happens in the Python translator service.
+- **Decisions Made**: Implemented validation in `parser.py` using Kahn's algorithm (same approach as scheduler's `dag.py`) rather than creating an Eclipse project. Kept it as a private function `_validate_no_cycles()` called from `parse_dsl()` only when `steps` is present. Did not share code with scheduler's `dag.py` — they're separate services and the algorithm is small enough that duplication is acceptable.
+- **Lessons**: When an implementation plan references tooling that doesn't exist (Xtext/Eclipse), adapt to the actual runtime architecture rather than scaffolding missing infrastructure.
+
+## 2026-04-10: Add validation for undefined after references in step dependencies
+- **Change Type**: `feat`
+- **Summary**: Added `_validate_after_references` to `parser.py` that checks all `after` names in step definitions reference existing step names. Called before cycle detection in `parse_dsl`.
+- **Context / Motivation**: Task 4 of branching pipeline variant plan. Without this validation, a DSL with typos or undefined step names in `after` would silently produce an invalid DAG.
+- **Decisions Made**: Placed validation before cycle detection (fail fast on simpler check). Used a separate function rather than inlining into `_validate_no_cycles` to keep single responsibility.
+- **Lessons**: None new — straightforward validation addition.
+
+## 2026-04-10 — Task 5: Entry point validation for step dependency graph
+
+- **Change Type**: `feat`
+- **Summary**: Added `_validate_has_entry_point` to `parser.py` that rejects DAGs where every step has `after` dependencies (no entry point). Wired into `parse_dsl` after cycle detection.
+- **Context / Motivation**: Task 5 of branching pipeline variant plan. A DAG with no entry point is unexecutable — no step can start since all steps wait on dependencies.
+- **Decisions Made**: Placed validation after cycle detection in the chain (entry point check is meaningful only on acyclic graphs). Used `all()` on `step.after` — truthy check on non-empty list is sufficient.
+- **Lessons**: None new — follows established validation pattern from Tasks 3-4.
+
+---
+
+## 2026-04-10 — Task 6: Exit point validation rule
+- **Date**: 2026-04-10T16:28+02:00
+- **Change Type**: `feat`
+- **Summary**: Added `_validate_has_exit_point` to `parser.py` that rejects DAGs where every step is depended on by another (no terminal/leaf node). Wired into `parse_dsl` after entry point validation.
+- **Context / Motivation**: Task 6 of branching pipeline variant plan. A DAG with no exit point means every step feeds into another — the pipeline never terminates. Completes Phase 2 (Validation).
+- **Decisions Made**: Used set subset check (`names <= referenced`) — if all step names appear in at least one other step's `after` list, there's no exit point. Placed after entry point check in the validation chain.
+- **Lessons**: None new — follows established validation pattern from Tasks 3-5.
+
+## 2026-04-10 — Task 7: Python generator skeleton
+- **Summary**: Created `generator.py` in translator service with `GrammarStep`/`GrammarWorkflow` Pydantic models and stub `generate()` function.
+- **Change Type**: `feat`
+- **Context / Motivation**: Branching pipeline variant plan requires a code generator to convert Xtext DSL models to JSON pipeline definitions. No Eclipse/Xtend project exists, so adapted to Python.
+- **Decisions Made**: Placed generator in `src/translator/src/services/` alongside the parser (same DSL domain). Used Pydantic frozen models matching the Xtext grammar's Step/Workflow rules. Stub returns empty dict — topological sort (Task 8) and JSON output (Task 9) will fill it in.
+- **Lessons**: None new — followed existing pattern from validation adaptation (Tasks 3-6).
+
+## 2026-04-10: Implement topological sort for generator step ordering
+- **Change Type**: `feat`
+- **Summary**: Added `_topological_sort()` to `generator.py` using Kahn's algorithm; `generate()` now returns steps in dependency order.
+- **Context / Motivation**: Phase 3 Task 8 of branching pipeline variant — generator must order steps before emitting JSON pipeline definition.
+- **Decisions Made**: Reused Kahn's algorithm pattern consistent with `parser.py` and `dag.py`. Kept sort internal to generator (no cross-service import). Output dict includes all step fields to prepare for Task 9.
+- **Lessons**: None new — straightforward application of existing pattern.
+
+## 2026-04-10 — Mark Tasks 9 and 33 complete in branching pipeline plan
+- **Change Type**: `docs`
+- **Summary**: Verified and marked Tasks 9 (JSON output generation) and 33 (Xtext validation tests) as complete — both were already implemented in earlier tasks.
+- **Context / Motivation**: User requested picking the most important atomic task from the branching pipeline plan. Both remaining tasks (9 and 33) were already implemented as part of tightly coupled earlier tasks (8 and 3-6 respectively) but not marked complete.
+- **Decisions Made**: Ran full test suites (72 tests pass) to verify rather than re-implementing. Updated plan with notes explaining when each was actually implemented.
+- **Lessons**: Tightly coupled tasks (per lessons.md) can result in later tasks being silently completed. Always verify before assuming work is needed.
+
+## 2026-04-10 — Remove ETL action types from ActionTypes enum
+- **Change Type**: `refactor`
+- **Summary**: Stripped 12 ETL action types from `ActionTypes` in `cflDSL.xtext`, keeping only the 5 analytical types. Updated spec and implementation plan to reflect the change.
+- **Context / Motivation**: The branching pipeline variant focuses exclusively on analytical steps; ETL types are no longer needed in the grammar.
+- **Decisions Made**: Updated `branching_pipeline_variant.md` Data Sources table to document the enum contents. Rewrote Task 2 in the implementation plan to describe removal of ETL types rather than addition of analytical types.
+- **Lessons**: None new.

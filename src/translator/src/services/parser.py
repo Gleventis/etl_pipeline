@@ -5,6 +5,7 @@ and a parse function to convert DSL strings into structured commands.
 """
 
 import json
+from collections import defaultdict, deque
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -25,6 +26,24 @@ class CollectCommand(BaseModel):
     taxi_type: str
 
 
+class StepDefinition(BaseModel):
+    """Single step in a DAG-based pipeline topology.
+
+    Attributes:
+        name: Unique step identifier within the pipeline.
+        action: Analytical action to perform (e.g. DESCRIPTIVE_STATISTICS).
+        checkpoint: Whether to persist state after this step completes.
+        after: Step names that must complete before this step runs.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    checkpoint: bool = True
+    after: list[str] = Field(default_factory=list)
+
+
 class AnalyzeCommand(BaseModel):
     """Maps to scheduler's ScheduleRequest.
 
@@ -32,6 +51,7 @@ class AnalyzeCommand(BaseModel):
         bucket: S3 bucket name.
         objects: List of S3 object paths.
         skip_checkpoints: Analytical steps to skip checkpointing for.
+        steps: Optional DAG step definitions for branching pipeline.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -39,6 +59,7 @@ class AnalyzeCommand(BaseModel):
     bucket: str
     objects: list[str]
     skip_checkpoints: list[str] = Field(default_factory=list)
+    steps: list[StepDefinition] | None = None
 
 
 class AggregateCommand(BaseModel):
@@ -74,6 +95,87 @@ class ParsedDSL(BaseModel):
     aggregate: AggregateCommand | None = None
 
 
+def _validate_after_references(steps: list[StepDefinition]) -> None:
+    """Validate that all after references point to existing step names.
+
+    Args:
+        steps: Step definitions with dependency declarations.
+
+    Raises:
+        ValueError: When an after reference names a step that does not exist.
+    """
+    names = {s.name for s in steps}
+    for step in steps:
+        for dep in step.after:
+            if dep not in names:
+                raise ValueError(
+                    f"step '{step.name}' references undefined step '{dep}' in after"
+                )
+
+
+def _validate_has_entry_point(steps: list[StepDefinition]) -> None:
+    """Validate that at least one step has no dependencies (entry point).
+
+    Args:
+        steps: Step definitions with dependency declarations.
+
+    Raises:
+        ValueError: When every step has at least one after dependency.
+    """
+    if steps and all(step.after for step in steps):
+        raise ValueError(
+            "step dependency graph has no entry point: every step has dependencies"
+        )
+
+
+def _validate_has_exit_point(steps: list[StepDefinition]) -> None:
+    """Validate that at least one step is not depended on by any other step (exit point)."""
+    if not steps:
+        return
+    referenced = {dep for step in steps for dep in step.after}
+    names = {s.name for s in steps}
+    if names <= referenced:
+        raise ValueError(
+            "step dependency graph has no exit point: every step is depended on by another"
+        )
+
+
+def _validate_no_cycles(steps: list[StepDefinition]) -> None:
+    """Validate that the step dependency graph contains no cycles.
+
+    Uses Kahn's algorithm: if topological sort cannot visit all nodes,
+    a cycle exists.
+
+    Args:
+        steps: Step definitions with dependency declarations.
+
+    Raises:
+        ValueError: When the dependency graph contains a cycle.
+    """
+    names = {s.name for s in steps}
+    in_degree: dict[str, int] = {s.name: 0 for s in steps}
+    successors: dict[str, list[str]] = defaultdict(list)
+
+    for step in steps:
+        for dep in step.after:
+            successors[dep].append(step.name)
+            in_degree[step.name] += 1
+
+    queue = deque(name for name, deg in in_degree.items() if deg == 0)
+    visited = 0
+
+    while queue:
+        current = queue.popleft()
+        visited += 1
+        for successor in successors[current]:
+            in_degree[successor] -= 1
+            if in_degree[successor] == 0:
+                queue.append(successor)
+
+    if visited != len(names):
+        raise ValueError("step dependency graph contains a cycle")
+
+
 def parse_dsl(dsl: str) -> ParsedDSL:
     """Parse a JSON-based DSL string into structured commands.
 
@@ -107,6 +209,12 @@ def parse_dsl(dsl: str) -> ParsedDSL:
         raise ValueError(
             "DSL must contain at least one section: collect, analyze, or aggregate"
         )
+
+    if analyze is not None and analyze.steps is not None:
+        _validate_after_references(steps=analyze.steps)
+        _validate_no_cycles(steps=analyze.steps)
+        _validate_has_entry_point(steps=analyze.steps)
+        _validate_has_exit_point(steps=analyze.steps)
 
     return ParsedDSL(collect=collect, analyze=analyze, aggregate=aggregate)
 

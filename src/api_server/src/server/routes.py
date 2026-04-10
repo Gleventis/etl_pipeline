@@ -29,6 +29,10 @@ from src.server.models import (
     PipelineEfficiencyStatistic,
     PipelineSummaryResponse,
     RecoveryTimeResponse,
+    StepDependencyBatchCreate,
+    StepDependencyBatchResponse,
+    StepDependencyEdge,
+    StepDependencyResponse,
     StepFailureStatistic,
     StepPerformanceResponse,
     StepPerformanceStatistic,
@@ -38,12 +42,14 @@ from src.services.crud import (
     create_job_execution,
     create_job_executions_batch,
     create_or_get_file,
+    create_step_dependencies_batch,
     get_analytical_result_by_id,
     get_file_by_id,
     get_job_execution_by_id,
     list_analytical_results,
     list_files,
     list_job_executions,
+    list_step_dependencies,
     update_file,
     update_job_execution,
 )
@@ -604,6 +610,74 @@ def get_analytical_results(
         total=total,
         limit=limit,
         offset=offset,
+    )
+
+
+@router.post(
+    "/step-dependencies",
+    status_code=status.HTTP_200_OK,
+    response_model=StepDependencyBatchResponse,
+)
+def post_step_dependencies(
+    body: StepDependencyBatchCreate,
+    session: Session = Depends(get_db),
+) -> StepDependencyBatchResponse:
+    """Batch-insert DAG edges for a pipeline run.
+
+    Args:
+        body: Batch step dependency creation request.
+        session: Database session.
+
+    Returns:
+        Count of inserted edges.
+    """
+    count = create_step_dependencies_batch(
+        session=session,
+        pipeline_run_id=body.pipeline_run_id,
+        edges=[e.model_dump() for e in body.edges],
+    )
+    return StepDependencyBatchResponse(inserted=count)
+
+
+@router.get(
+    "/step-dependencies/{pipeline_run_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=StepDependencyResponse,
+)
+def get_step_dependencies(
+    pipeline_run_id: str,
+    session: Session = Depends(get_db),
+) -> StepDependencyResponse:
+    """Retrieve DAG edges for a pipeline run.
+
+    Args:
+        pipeline_run_id: Pipeline run identifier.
+        session: Database session.
+
+    Returns:
+        DAG edges for the pipeline run.
+
+    Raises:
+        HTTPException: 404 if no edges found for the pipeline run.
+    """
+    edges = list_step_dependencies(
+        session=session,
+        pipeline_run_id=pipeline_run_id,
+    )
+    if not edges:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"no step dependencies found for pipeline run {pipeline_run_id}",
+        )
+    return StepDependencyResponse(
+        pipeline_run_id=pipeline_run_id,
+        edges=[
+            StepDependencyEdge(
+                step_name=e.step_name,
+                depends_on_step_name=e.depends_on_step_name,
+            )
+            for e in edges
+        ],
     )
 
 

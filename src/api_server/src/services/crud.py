@@ -7,7 +7,12 @@ from datetime import datetime
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from src.services.database import AnalyticalResults, Files, JobExecutions
+from src.services.database import (
+    AnalyticalResults,
+    Files,
+    JobExecutions,
+    StepDependencies,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +473,58 @@ def list_analytical_results(
     total = session.execute(count_query).scalar_one()
     rows = session.execute(query.offset(offset).limit(limit)).all()
     return [(row[0], row[1]) for row in rows], total
+
+
+def create_step_dependencies_batch(
+    session: Session,
+    pipeline_run_id: str,
+    edges: list[dict[str, str]],
+) -> int:
+    """Batch-insert DAG edges for a pipeline run.
+
+    Args:
+        session: Active SQLAlchemy session.
+        pipeline_run_id: Pipeline run identifier.
+        edges: List of dicts with keys: step_name, depends_on_step_name.
+
+    Returns:
+        Number of inserted rows.
+    """
+    rows = [
+        StepDependencies(
+            pipeline_run_id=pipeline_run_id,
+            step_name=edge["step_name"],
+            depends_on_step_name=edge["depends_on_step_name"],
+        )
+        for edge in edges
+    ]
+    session.add_all(rows)
+    session.commit()
+    return len(rows)
+
+
+def list_step_dependencies(
+    session: Session,
+    pipeline_run_id: str,
+) -> list[StepDependencies]:
+    """List DAG edges for a pipeline run.
+
+    Args:
+        session: Active SQLAlchemy session.
+        pipeline_run_id: Pipeline run identifier.
+
+    Returns:
+        List of StepDependencies records for the given pipeline run.
+    """
+    return (
+        session.execute(
+            select(StepDependencies).where(
+                StepDependencies.pipeline_run_id == pipeline_run_id
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 if __name__ == "__main__":

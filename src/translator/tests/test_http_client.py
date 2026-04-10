@@ -6,7 +6,12 @@ import httpx
 import pytest
 
 from src.services.http_client import call_aggregator, call_collector, call_scheduler
-from src.services.parser import AggregateCommand, AnalyzeCommand, CollectCommand
+from src.services.parser import (
+    AggregateCommand,
+    AnalyzeCommand,
+    CollectCommand,
+    StepDefinition,
+)
 
 _original_init = httpx.Client.__init__
 
@@ -128,6 +133,47 @@ class TestCallScheduler:
         assert body["objects"] == ["yellow/2024-01.parquet"]
         assert body["skip_checkpoints"] == []
         assert result == {"files": []}
+
+    def test_sends_steps_to_scheduler(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        transport, captured = _capture_transport(json_body={"files": []})
+        _patch_client(monkeypatch=monkeypatch, transport=transport)
+
+        cmd = AnalyzeCommand(
+            bucket="b",
+            objects=["o"],
+            steps=[
+                StepDefinition(name="s1", action="DESCRIPTIVE_STATISTICS"),
+                StepDefinition(
+                    name="s2",
+                    action="DATA_CLEANING",
+                    checkpoint=False,
+                    after=["s1"],
+                ),
+            ],
+        )
+        call_scheduler(cmd=cmd)
+
+        body = json.loads(captured[0].content)
+        assert len(body["steps"]) == 2
+        assert body["steps"][0]["name"] == "s1"
+        assert body["steps"][0]["action"] == "DESCRIPTIVE_STATISTICS"
+        assert body["steps"][0]["checkpoint"] is True
+        assert body["steps"][0]["after"] == []
+        assert body["steps"][1]["name"] == "s2"
+        assert body["steps"][1]["after"] == ["s1"]
+        assert body["steps"][1]["checkpoint"] is False
+
+    def test_sends_null_steps_when_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        transport, captured = _capture_transport(json_body={"files": []})
+        _patch_client(monkeypatch=monkeypatch, transport=transport)
+
+        cmd = AnalyzeCommand(bucket="b", objects=["o"])
+        call_scheduler(cmd=cmd)
+
+        body = json.loads(captured[0].content)
+        assert body["steps"] is None
 
     def test_sends_skip_checkpoints(self, monkeypatch: pytest.MonkeyPatch) -> None:
         transport, captured = _capture_transport(json_body={"files": []})

@@ -8,6 +8,7 @@ import pytest
 from src.services.api_server_client import (
     create_file_record,
     create_job_execution,
+    persist_step_dependencies,
     update_file,
     update_job_execution,
 )
@@ -449,4 +450,107 @@ class TestUpdateFile:
                 api_server_url="http://localhost:8000",
                 file_id=1,
                 overall_status="completed",
+            )
+
+
+class TestPersistStepDependencies:
+    """Tests for the persist_step_dependencies function."""
+
+    @patch("src.services.api_server_client.httpx.Client")
+    def test_posts_edges_to_step_dependencies_endpoint(self, mock_client_cls):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"inserted": 2}
+        mock_response.raise_for_status.return_value = None
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        persist_step_dependencies(
+            api_server_url="http://localhost:8000",
+            pipeline_run_id="run-001",
+            edges=[
+                ("data_cleaning", "descriptive_statistics"),
+                ("temporal_analysis", "data_cleaning"),
+            ],
+        )
+
+        mock_client.post.assert_called_once_with(
+            url="/step-dependencies",
+            json={
+                "pipeline_run_id": "run-001",
+                "edges": [
+                    {
+                        "step_name": "data_cleaning",
+                        "depends_on_step_name": "descriptive_statistics",
+                    },
+                    {
+                        "step_name": "temporal_analysis",
+                        "depends_on_step_name": "data_cleaning",
+                    },
+                ],
+            },
+            timeout=25.0,
+        )
+
+    @patch("src.services.api_server_client.httpx.Client")
+    def test_passes_base_url_and_verify_false(self, mock_client_cls):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        persist_step_dependencies(
+            api_server_url="http://api-server:8000",
+            pipeline_run_id="run-002",
+            edges=[("b", "a")],
+        )
+
+        mock_client_cls.assert_called_once_with(
+            base_url="http://api-server:8000",
+            verify=False,
+        )
+
+    @patch("src.services.api_server_client.httpx.Client")
+    def test_raises_on_http_error(self, mock_client_cls):
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            message="server error",
+            request=MagicMock(),
+            response=mock_response,
+        )
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(httpx.HTTPStatusError):
+            persist_step_dependencies(
+                api_server_url="http://localhost:8000",
+                pipeline_run_id="run-001",
+                edges=[("b", "a")],
+            )
+
+    @patch("src.services.api_server_client.httpx.Client")
+    def test_raises_on_network_error(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("connection refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(httpx.ConnectError):
+            persist_step_dependencies(
+                api_server_url="http://localhost:8000",
+                pipeline_run_id="run-001",
+                edges=[("b", "a")],
             )

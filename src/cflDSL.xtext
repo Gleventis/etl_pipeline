@@ -1,0 +1,97 @@
+grammar org.xtext.checkflowDSL.CflDSL with org.eclipse.xtext.common.Terminals
+
+generate cflDSL "http://www.xtext.org/checkflowDSL/CflDSL"
+import "http://www.eclipse.org/emf/2002/Ecore" as ecore
+
+CFLModel:
+	Workflow += Workflow*;
+
+Workflow:
+	'workflow' name = ID
+	'provider' provider = Provider
+	('extends' base = [Workflow])?
+	'communicationMedium:' communicationMedium = CommunicationMedium
+	'steps:' ('-' steps+=Step)*
+	;
+Step:
+	'step' name = ID ':'
+	('after:' '[' after+=[Step] (',' after+=[Step])* ']')?
+	('triggers:' (triggers += Triggers)*)?
+	'implementation:' implementation = Implementation
+	('parameters:' (params += InputParameter)*)*
+	('checkpoint:' (checkpoint = Checkpoint)?)?
+;
+
+Provider:
+	'cloud-provider' cloud_provider = Providers
+	'region' region = Regions
+	'machines' value = INT
+;
+CommunicationMedium:
+	type = CommunicationTypes
+;
+
+Implementation:
+	'action' Action = ActionTypes
+	('implementation:' startTime = STRING)?
+;
+
+Triggers:
+	OneTimeTrigger | ScheduleTrigger | ExternalEventTrigger
+;
+OneTimeTrigger:
+	{OneTimeTrigger}
+	'one-time'
+	(startTime = STRING)?
+;
+ScheduleTrigger:
+	IntervalSchedule | CronSchedule
+;
+ExternalEventTrigger:
+	{ExternalEventTrigger}
+	'external-event-trigger'
+;
+IntervalSchedule:
+	{IntervalSchedule}
+	'interval-schedule'
+	('frequency:' frequency = TimeUnits)?
+	('interval' interval = INT)?
+	('start-time' startTime = STRING)?
+;
+CronSchedule:
+	{CronSchedule}
+	'cron-schedule'
+	('start-time:' startTime = STRING)?
+	('cron:' cron = STRING)?
+;
+InputParameter:
+	(name = ID ('=' value = ParameterValueTypes)?)
+;
+ParameterValueTypes:
+	{String} value = STRING |
+	{Int} value = INT |
+	{Bool} value = BOOLEAN |
+	{Identifier} value = ID
+;
+Checkpoint:
+	(name = ID)
+	value = BOOLEAN
+;
+enum TimeUnits:
+	SECOND | MINUTE | HOUR | DAY | WEEK | MONTH | YEAR
+;
+terminal BOOLEAN returns ecore::EBoolean:
+	'true' | 'false'
+;
+enum Providers:
+	AWS | GCP | AZURE
+;
+enum Regions:
+	EU_CENTRAL_1
+;
+enum CommunicationTypes:
+	MESSAGE_QUEUE | DISTRIBUTED_FILE_SYSTEM | WEB_SERVICE
+;
+enum ActionTypes:
+	DESCRIPTIVE_STATISTICS | DATA_CLEANING | TEMPORAL_ANALYSIS | GEOSPATIAL_ANALYSIS | FARE_REVENUE_ANALYSIS
+;

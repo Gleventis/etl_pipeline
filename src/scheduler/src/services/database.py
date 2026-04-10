@@ -23,10 +23,15 @@ CREATE TABLE IF NOT EXISTS job_state (
     status TEXT NOT NULL DEFAULT 'pending',
     completed_steps JSONB NOT NULL DEFAULT '[]',
     failed_step TEXT,
+    dag_steps JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (object_name, bucket)
 );
+"""
+
+ADD_DAG_STEPS_COLUMN_SQL = """
+ALTER TABLE job_state ADD COLUMN IF NOT EXISTS dag_steps JSONB;
 """
 
 
@@ -42,6 +47,7 @@ class JobRecord(BaseModel):
     status: str = "pending"
     completed_steps: list[str] = Field(default_factory=list)
     failed_step: str | None = None
+    dag_steps: list[dict[str, object]] | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
@@ -68,11 +74,14 @@ def get_connection(
 def init_schema(conn: PgConnection) -> None:
     """Create the job_state table if it does not exist.
 
+    Also adds the dag_steps column for existing databases.
+
     Args:
         conn: Active Postgres connection.
     """
     with conn.cursor() as cur:
         cur.execute(CREATE_TABLE_SQL)
+        cur.execute(ADD_DAG_STEPS_COLUMN_SQL)
     conn.commit()
     logger.info("job_state table initialized")
 
@@ -86,6 +95,7 @@ def save_job_state(
     status: str,
     completed_steps: list[str],
     failed_step: str | None,
+    dag_steps: list[dict[str, object]] | None = None,
 ) -> None:
     """Upsert a job state row.
 
@@ -97,16 +107,18 @@ def save_job_state(
         status: Job status.
         completed_steps: List of completed step names.
         failed_step: Step that failed, if any.
+        dag_steps: Serialized DAG step definitions for resume, or None for linear.
     """
     sql = """
-    INSERT INTO job_state (object_name, bucket, current_step, status, completed_steps, failed_step, updated_at)
-    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+    INSERT INTO job_state (object_name, bucket, current_step, status, completed_steps, failed_step, dag_steps, updated_at)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
     ON CONFLICT (object_name, bucket)
     DO UPDATE SET
         current_step = EXCLUDED.current_step,
         status = EXCLUDED.status,
         completed_steps = EXCLUDED.completed_steps,
         failed_step = EXCLUDED.failed_step,
+        dag_steps = EXCLUDED.dag_steps,
         updated_at = NOW();
     """
     with conn.cursor() as cur:
@@ -119,6 +131,7 @@ def save_job_state(
                 status,
                 json.dumps(completed_steps),
                 failed_step,
+                json.dumps(dag_steps) if dag_steps is not None else None,
             ),
         )
     conn.commit()
@@ -136,7 +149,7 @@ def get_in_progress_jobs(conn: PgConnection) -> list[JobRecord]:
     """
     sql = """
     SELECT job_id, object_name, bucket, current_step, status,
-           completed_steps, failed_step, created_at, updated_at
+           completed_steps, failed_step, dag_steps, created_at, updated_at
     FROM job_state
     WHERE status = 'in_progress';
     """
@@ -157,7 +170,7 @@ def get_failed_jobs(conn: PgConnection) -> list[JobRecord]:
     """
     sql = """
     SELECT job_id, object_name, bucket, current_step, status,
-           completed_steps, failed_step, created_at, updated_at
+           completed_steps, failed_step, dag_steps, created_at, updated_at
     FROM job_state
     WHERE status = 'failed';
     """
@@ -178,7 +191,7 @@ def get_job_history(conn: PgConnection) -> list[JobRecord]:
     """
     sql = """
     SELECT job_id, object_name, bucket, current_step, status,
-           completed_steps, failed_step, created_at, updated_at
+           completed_steps, failed_step, dag_steps, created_at, updated_at
     FROM job_state
     ORDER BY created_at;
     """
@@ -205,8 +218,9 @@ def _row_to_record(*, row: tuple) -> JobRecord:
         status=row[4],
         completed_steps=row[5],
         failed_step=row[6],
-        created_at=row[7],
-        updated_at=row[8],
+        dag_steps=row[7],
+        created_at=row[8],
+        updated_at=row[9],
     )
 
 

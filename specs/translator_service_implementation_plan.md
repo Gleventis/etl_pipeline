@@ -160,10 +160,15 @@ Spec: [translator_service.md](translator_service.md)
   - Mocks: `get_connection` + `get_run` patched per test (same pattern as POST tests)
   - Ruff clean, all 82 translator tests passing
 
-- [ ] Step 21: Run ruff check and format on all translator files
-  - All files must pass `ruff check` and `ruff format`
-  - All tests must pass
+- [x] Step 21: Run ruff check and format on all translator files — **~10% context used**
+  - All 19 Python files pass `ruff check` with no errors
+  - All 19 files already formatted (no changes needed by `ruff format`)
+  - All 82 tests pass in 0.54s
+  - Removed 15 orphaned old implementation files (replaced during steps 1-20)
+  - Committed: `91a7b5b`
 
-- [ ] Step 22: Create translator service README at `src/translator/README.md`
-  - Service description, endpoints, DSL overview, how to run
-  - Follow existing service README pattern (e.g., `src/aggregator/README.md`)
+- [x] Step 22: Create translator service README at `src/translator/README.md` — **~5% context used**
+  - Service description, endpoints table, configuration table, DSL example, how to run/test
+  - Follows aggregator README pattern exactly
+  - Committed: `48683e5`
+  - Spec: [translator_service.md § API](translator_service.md)

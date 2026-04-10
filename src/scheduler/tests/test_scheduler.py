@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.server.models import StepDefinition
 from src.services.config import Settings
 from src.services.database import (
     get_connection,
@@ -103,6 +104,8 @@ class TestScheduleBatch:
             pipeline_run_id="abc123",
             start_step=None,
             skip_checkpoints=[],
+            steps=None,
+            initial_completed_steps=None,
         )
 
     @patch("src.services.scheduler.process_file_flow")
@@ -124,6 +127,35 @@ class TestScheduleBatch:
         assert statuses[0].status == "already_in_progress"
         assert statuses[1].status == "started"
         mock_flow.assert_called_once()
+
+    @patch("src.services.scheduler.uuid")
+    @patch("src.services.scheduler.process_file_flow")
+    def test_passes_dag_steps_to_flow(
+        self,
+        mock_flow: MagicMock,
+        mock_uuid: MagicMock,
+        service: SchedulerService,
+        settings: Settings,
+    ) -> None:
+        mock_uuid.uuid4.return_value.hex = "dag123"
+        dag_steps = [
+            StepDefinition(name="stats", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="cleaning", action="DATA_CLEANING", after=["stats"]),
+        ]
+        service.schedule_batch(
+            bucket="raw-data", objects=["file1.parquet"], steps=dag_steps
+        )
+        mock_flow.assert_called_once_with(
+            object_name="file1.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url=service._db_url,
+            pipeline_run_id="dag123",
+            start_step=None,
+            skip_checkpoints=[],
+            steps=dag_steps,
+            initial_completed_steps=None,
+        )
 
 
 class TestCheckpointLifecycle:
@@ -177,6 +209,8 @@ class TestCheckpointLifecycle:
             pipeline_run_id="resume-run-001",
             start_step=STEPS[2],
             skip_checkpoints=[],
+            steps=None,
+            initial_completed_steps=None,
         )
 
 
@@ -214,6 +248,8 @@ class TestResumeFailed:
             pipeline_run_id="resume123",
             start_step=STEPS[2],
             skip_checkpoints=[],
+            steps=None,
+            initial_completed_steps=None,
         )
 
     @patch("src.services.scheduler.process_file_flow")
@@ -249,6 +285,139 @@ class TestResumeFailed:
         resumed = service.resume_failed()
         assert len(resumed) == 2
         assert mock_flow.call_count == 2
+
+    @patch("src.services.scheduler.uuid")
+    @patch("src.services.scheduler.process_file_flow")
+    def test_dag_resume_passes_steps_and_completed(
+        self,
+        mock_flow: MagicMock,
+        mock_uuid: MagicMock,
+        service: SchedulerService,
+        conn: object,
+    ) -> None:
+        """DAG-aware resume passes original steps and completed_steps to flow."""
+        mock_uuid.uuid4.return_value.hex = "dag-resume-001"
+        dag_steps = [
+            {
+                "name": "stats",
+                "action": "DESCRIPTIVE_STATISTICS",
+                "checkpoint": True,
+                "after": [],
+            },
+            {
+                "name": "cleaning",
+                "action": "DATA_CLEANING",
+                "checkpoint": True,
+                "after": ["stats"],
+            },
+            {
+                "name": "temporal",
+                "action": "TEMPORAL_ANALYSIS",
+                "checkpoint": True,
+                "after": ["cleaning"],
+            },
+            {
+                "name": "geospatial",
+                "action": "GEOSPATIAL_ANALYSIS",
+                "checkpoint": True,
+                "after": ["cleaning"],
+            },
+            {
+                "name": "fare",
+                "action": "FARE_REVENUE_ANALYSIS",
+                "checkpoint": True,
+                "after": ["temporal", "geospatial"],
+            },
+        ]
+        save_job_state(
+            conn=conn,
+            object_name="file1.parquet",
+            bucket="raw-data",
+            current_step="geospatial",
+            status="failed",
+            completed_steps=["stats", "cleaning", "temporal"],
+            failed_step="geospatial",
+            dag_steps=dag_steps,
+        )
+        resumed = service.resume_failed()
+        assert len(resumed) == 1
+        assert resumed[0].restart_step == "geospatial"
+
+        call_kwargs = mock_flow.call_args.kwargs
+        assert call_kwargs["start_step"] is None
+        assert call_kwargs["initial_completed_steps"] == [
+            "stats",
+            "cleaning",
+            "temporal",
+        ]
+        assert call_kwargs["steps"] is not None
+        assert len(call_kwargs["steps"]) == 5
+        assert call_kwargs["steps"][0].name == "stats"
+        assert call_kwargs["steps"][3].after == ["cleaning"]
+
+    @patch("src.services.scheduler.uuid")
+    @patch("src.services.scheduler.process_file_flow")
+    def test_dag_resume_lifecycle_schedule_fail_resume(
+        self,
+        mock_flow: MagicMock,
+        mock_uuid: MagicMock,
+        service: SchedulerService,
+        conn: object,
+    ) -> None:
+        """Full lifecycle: schedule DAG → fail at branch → resume with DAG."""
+        mock_uuid.uuid4.return_value.hex = "dag-batch-001"
+        dag_steps = [
+            StepDefinition(name="stats", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="cleaning", action="DATA_CLEANING", after=["stats"]),
+            StepDefinition(
+                name="temporal", action="TEMPORAL_ANALYSIS", after=["cleaning"]
+            ),
+            StepDefinition(
+                name="geospatial", action="GEOSPATIAL_ANALYSIS", after=["cleaning"]
+            ),
+            StepDefinition(
+                name="fare",
+                action="FARE_REVENUE_ANALYSIS",
+                after=["temporal", "geospatial"],
+            ),
+        ]
+        dag_steps_json = [s.model_dump() for s in dag_steps]
+
+        def simulate_dag_failure(**kwargs: object) -> None:
+            save_job_state(
+                conn=conn,
+                object_name="file1.parquet",
+                bucket="raw-data",
+                current_step="geospatial",
+                status="failed",
+                completed_steps=["stats", "cleaning", "temporal"],
+                failed_step="geospatial",
+                dag_steps=dag_steps_json,
+            )
+
+        mock_flow.side_effect = simulate_dag_failure
+        service.schedule_batch(
+            bucket="raw-data", objects=["file1.parquet"], steps=dag_steps
+        )
+        assert mock_flow.call_count == 1
+
+        mock_flow.reset_mock()
+        mock_flow.side_effect = None
+        mock_uuid.uuid4.return_value.hex = "dag-resume-001"
+
+        resumed = service.resume_failed()
+        assert len(resumed) == 1
+        assert resumed[0].restart_step == "geospatial"
+
+        call_kwargs = mock_flow.call_args.kwargs
+        assert call_kwargs["start_step"] is None
+        assert call_kwargs["initial_completed_steps"] == [
+            "stats",
+            "cleaning",
+            "temporal",
+        ]
+        assert call_kwargs["steps"] is not None
+        assert len(call_kwargs["steps"]) == 5
 
 
 if __name__ == "__main__":

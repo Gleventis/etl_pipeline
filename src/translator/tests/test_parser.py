@@ -8,6 +8,11 @@ from src.services.parser import (
     AggregateCommand,
     AnalyzeCommand,
     CollectCommand,
+    StepDefinition,
+    _validate_after_references,
+    _validate_has_entry_point,
+    _validate_has_exit_point,
+    _validate_no_cycles,
     parse_dsl,
 )
 
@@ -118,6 +123,41 @@ class TestParseDslValidInputs:
         assert result.analyze is not None
         assert result.analyze.skip_checkpoints == []
 
+    def test_analyze_defaults_steps_to_none(self) -> None:
+        dsl = json.dumps({"analyze": {"bucket": "b", "objects": ["o"]}})
+        result = parse_dsl(dsl=dsl)
+        assert result.analyze is not None
+        assert result.analyze.steps is None
+
+    def test_analyze_with_steps(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {"name": "s1", "action": "DESCRIPTIVE_STATISTICS"},
+                        {
+                            "name": "s2",
+                            "action": "DATA_CLEANING",
+                            "checkpoint": False,
+                            "after": ["s1"],
+                        },
+                    ],
+                }
+            }
+        )
+        result = parse_dsl(dsl=dsl)
+        assert result.analyze is not None
+        assert result.analyze.steps is not None
+        assert len(result.analyze.steps) == 2
+        assert result.analyze.steps[0] == StepDefinition(
+            name="s1", action="DESCRIPTIVE_STATISTICS"
+        )
+        assert result.analyze.steps[1] == StepDefinition(
+            name="s2", action="DATA_CLEANING", checkpoint=False, after=["s1"]
+        )
+
     def test_aggregate_defaults_params_to_empty(self) -> None:
         dsl = json.dumps({"aggregate": {"endpoint": "data-quality"}})
         result = parse_dsl(dsl=dsl)
@@ -218,3 +258,308 @@ class TestParsedDslFrozen:
         assert result.analyze is not None
         with pytest.raises(Exception):
             result.analyze.bucket = "other"  # type: ignore[misc]
+
+
+class TestStepDefinition:
+    """Tests for StepDefinition model."""
+
+    def test_instantiates_with_all_fields(self) -> None:
+        step = StepDefinition(
+            name="x",
+            action="DESCRIPTIVE_STATISTICS",
+            checkpoint=True,
+            after=[],
+        )
+        assert step.name == "x"
+        assert step.action == "DESCRIPTIVE_STATISTICS"
+        assert step.checkpoint is True
+        assert step.after == []
+
+    def test_defaults_checkpoint_true(self) -> None:
+        step = StepDefinition(name="s1", action="DATA_CLEANING")
+        assert step.checkpoint is True
+
+    def test_defaults_after_empty(self) -> None:
+        step = StepDefinition(name="s1", action="DATA_CLEANING")
+        assert step.after == []
+
+    def test_with_dependencies(self) -> None:
+        step = StepDefinition(
+            name="fare",
+            action="FARE_REVENUE_ANALYSIS",
+            after=["geospatial", "temporal"],
+        )
+        assert step.after == ["geospatial", "temporal"]
+
+    def test_is_frozen(self) -> None:
+        step = StepDefinition(name="s1", action="DATA_CLEANING")
+        with pytest.raises(Exception):
+            step.name = "other"  # type: ignore[misc]
+
+    def test_rejects_empty_name(self) -> None:
+        with pytest.raises(Exception):
+            StepDefinition(name="", action="DATA_CLEANING")
+
+    def test_rejects_empty_action(self) -> None:
+        with pytest.raises(Exception):
+            StepDefinition(name="s1", action="")
+
+
+class TestValidateNoCycles:
+    """Tests for cycle detection in step dependency graph."""
+
+    def test_acyclic_graph_passes(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+            StepDefinition(name="c", action="TEMPORAL_ANALYSIS", after=["b"]),
+        ]
+        _validate_no_cycles(steps=steps)  # should not raise
+
+    def test_direct_cycle_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["b"]),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="cycle"):
+            _validate_no_cycles(steps=steps)
+
+    def test_self_loop_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="cycle"):
+            _validate_no_cycles(steps=steps)
+
+    def test_indirect_cycle_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["c"]),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+            StepDefinition(name="c", action="TEMPORAL_ANALYSIS", after=["b"]),
+        ]
+        with pytest.raises(ValueError, match="cycle"):
+            _validate_no_cycles(steps=steps)
+
+    def test_single_step_no_deps_passes(self) -> None:
+        steps = [StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS")]
+        _validate_no_cycles(steps=steps)  # should not raise
+
+    def test_diamond_dag_passes(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+            StepDefinition(name="c", action="TEMPORAL_ANALYSIS", after=["a"]),
+            StepDefinition(name="d", action="FARE_REVENUE_ANALYSIS", after=["b", "c"]),
+        ]
+        _validate_no_cycles(steps=steps)  # should not raise
+
+    def test_parse_dsl_rejects_cyclic_steps(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {
+                            "name": "a",
+                            "action": "DESCRIPTIVE_STATISTICS",
+                            "after": ["b"],
+                        },
+                        {"name": "b", "action": "DATA_CLEANING", "after": ["a"]},
+                    ],
+                }
+            }
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            parse_dsl(dsl=dsl)
+
+    def test_parse_dsl_accepts_acyclic_steps(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {"name": "a", "action": "DESCRIPTIVE_STATISTICS"},
+                        {"name": "b", "action": "DATA_CLEANING", "after": ["a"]},
+                    ],
+                }
+            }
+        )
+        result = parse_dsl(dsl=dsl)
+        assert result.analyze is not None
+        assert len(result.analyze.steps) == 2
+
+    def test_parse_dsl_skips_validation_when_no_steps(self) -> None:
+        dsl = json.dumps({"analyze": {"bucket": "b", "objects": ["o"]}})
+        result = parse_dsl(dsl=dsl)
+        assert result.analyze is not None
+        assert result.analyze.steps is None
+
+
+class TestValidateAfterReferences:
+    """Tests for after-reference validation in step dependency graph."""
+
+    def test_valid_references_pass(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        _validate_after_references(steps=steps)  # should not raise
+
+    def test_undefined_reference_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["nonexistent"]),
+        ]
+        with pytest.raises(ValueError, match="undefined step 'nonexistent'"):
+            _validate_after_references(steps=steps)
+
+    def test_multiple_deps_one_undefined_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+            StepDefinition(
+                name="c", action="TEMPORAL_ANALYSIS", after=["a", "missing"]
+            ),
+        ]
+        with pytest.raises(ValueError, match="undefined step 'missing'"):
+            _validate_after_references(steps=steps)
+
+    def test_no_deps_passes(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING"),
+        ]
+        _validate_after_references(steps=steps)  # should not raise
+
+    def test_empty_steps_passes(self) -> None:
+        _validate_after_references(steps=[])  # should not raise
+
+    def test_parse_dsl_rejects_undefined_after_reference(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {"name": "a", "action": "DESCRIPTIVE_STATISTICS"},
+                        {
+                            "name": "b",
+                            "action": "DATA_CLEANING",
+                            "after": ["ghost"],
+                        },
+                    ],
+                }
+            }
+        )
+        with pytest.raises(ValueError, match="undefined step 'ghost'"):
+            parse_dsl(dsl=dsl)
+
+
+class TestValidateHasEntryPoint:
+    """Tests for entry point validation in step dependency graph."""
+
+    def test_step_without_deps_passes(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        _validate_has_entry_point(steps=steps)  # should not raise
+
+    def test_all_steps_have_deps_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["b"]),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="no entry point"):
+            _validate_has_entry_point(steps=steps)
+
+    def test_single_step_no_deps_passes(self) -> None:
+        steps = [StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS")]
+        _validate_has_entry_point(steps=steps)  # should not raise
+
+    def test_single_step_with_self_dep_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="no entry point"):
+            _validate_has_entry_point(steps=steps)
+
+    def test_empty_steps_passes(self) -> None:
+        _validate_has_entry_point(steps=[])  # should not raise
+
+    def test_parse_dsl_rejects_no_entry_point(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {
+                            "name": "a",
+                            "action": "DESCRIPTIVE_STATISTICS",
+                            "after": ["b"],
+                        },
+                        {"name": "b", "action": "DATA_CLEANING", "after": ["a"]},
+                    ],
+                }
+            }
+        )
+        with pytest.raises(ValueError, match="no entry point|cycle"):
+            parse_dsl(dsl=dsl)
+
+
+class TestValidateHasExitPoint:
+    """Tests for exit point validation in step dependency graph."""
+
+    def test_step_not_referenced_passes(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        _validate_has_exit_point(steps=steps)
+
+    def test_all_steps_referenced_raises(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS", after=["b"]),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="no exit point"):
+            _validate_has_exit_point(steps=steps)
+
+    def test_single_step_no_deps_passes(self) -> None:
+        steps = [StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS")]
+        _validate_has_exit_point(steps=steps)
+
+    def test_diamond_dag_has_exit_point(self) -> None:
+        steps = [
+            StepDefinition(name="a", action="DESCRIPTIVE_STATISTICS"),
+            StepDefinition(name="b", action="DATA_CLEANING", after=["a"]),
+            StepDefinition(name="c", action="TEMPORAL_ANALYSIS", after=["a"]),
+            StepDefinition(name="d", action="FARE_REVENUE_ANALYSIS", after=["b", "c"]),
+        ]
+        _validate_has_exit_point(steps=steps)
+
+    def test_empty_steps_passes(self) -> None:
+        _validate_has_exit_point(steps=[])
+
+    def test_parse_dsl_rejects_no_exit_point(self) -> None:
+        dsl = json.dumps(
+            {
+                "analyze": {
+                    "bucket": "b",
+                    "objects": ["o"],
+                    "steps": [
+                        {
+                            "name": "a",
+                            "action": "DESCRIPTIVE_STATISTICS",
+                            "after": ["b"],
+                        },
+                        {"name": "b", "action": "DATA_CLEANING", "after": ["a"]},
+                    ],
+                }
+            }
+        )
+        with pytest.raises(ValueError, match="no exit point|cycle"):
+            parse_dsl(dsl=dsl)

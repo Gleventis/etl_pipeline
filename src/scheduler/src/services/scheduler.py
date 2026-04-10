@@ -4,7 +4,7 @@ import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor, wait
 
-from src.server.models import FileStatus, ResumedJob
+from src.server.models import FileStatus, ResumedJob, StepDefinition
 from src.services.config import Settings
 from src.services.database import get_connection
 from src.services.prefect_flows import process_file_flow
@@ -33,6 +33,7 @@ class SchedulerService:
         bucket: str,
         objects: list[str],
         skip_checkpoints: list[str] | None = None,
+        steps: list[StepDefinition] | None = None,
     ) -> list[FileStatus]:
         """Schedule a batch of files for pipeline processing.
 
@@ -43,6 +44,7 @@ class SchedulerService:
             bucket: MinIO bucket where the files reside.
             objects: List of S3 object paths to process.
             skip_checkpoints: Step names for which checkpoint persistence is skipped.
+            steps: Optional DAG step definitions for branching pipeline.
 
         Returns:
             List of FileStatus with per-file scheduling outcome.
@@ -68,6 +70,7 @@ class SchedulerService:
             pipeline_run_id=pipeline_run_id,
             args=[{"object_name": obj, "bucket": bucket} for obj in processable],
             skip_checkpoints=skip_checkpoints or [],
+            steps=steps,
         )
 
         return statuses
@@ -75,8 +78,9 @@ class SchedulerService:
     def resume_failed(self) -> list[ResumedJob]:
         """Resume all failed jobs from their failed step.
 
-        Reads failed jobs from Postgres, triggers a Prefect flow run
-        per failed job with start_step set to the failed step.
+        For DAG jobs (where dag_steps is stored), passes the original DAG
+        definition and completed steps to the flow so it resumes only the
+        incomplete branch.  For linear jobs, falls back to start_step.
 
         Returns:
             List of ResumedJob with object name and restart step.
@@ -89,7 +93,7 @@ class SchedulerService:
             return []
 
         resumed: list[ResumedJob] = []
-        flow_args: list[dict[str, str]] = []
+        flow_args: list[dict[str, object]] = []
         for record in failed_records:
             if not record.failed_step:
                 continue
@@ -99,13 +103,24 @@ class SchedulerService:
                     restart_step=record.failed_step,
                 )
             )
-            flow_args.append(
-                {
-                    "object_name": record.object_name,
-                    "bucket": record.bucket,
-                    "start_step": record.failed_step,
-                }
-            )
+            if record.dag_steps:
+                steps = [StepDefinition(**s) for s in record.dag_steps]
+                flow_args.append(
+                    {
+                        "object_name": record.object_name,
+                        "bucket": record.bucket,
+                        "steps": steps,
+                        "initial_completed_steps": record.completed_steps,
+                    }
+                )
+            else:
+                flow_args.append(
+                    {
+                        "object_name": record.object_name,
+                        "bucket": record.bucket,
+                        "start_step": record.failed_step,
+                    }
+                )
 
         pipeline_run_id = uuid.uuid4().hex
         self._run_flows_concurrently(
@@ -119,16 +134,19 @@ class SchedulerService:
         self,
         *,
         pipeline_run_id: str,
-        args: list[dict[str, str]],
+        args: list[dict[str, object]],
         skip_checkpoints: list[str] | None = None,
+        steps: list[StepDefinition] | None = None,
     ) -> None:
         """Submit flow runs to a thread pool and wait for all to complete.
 
         Args:
             pipeline_run_id: Unique identifier for this pipeline run.
             args: List of dicts with per-flow keyword arguments
-                  (object_name, bucket, and optionally start_step).
+                  (object_name, bucket, and optionally start_step, steps,
+                  initial_completed_steps).
             skip_checkpoints: Step names for which checkpoint persistence is skipped.
+            steps: Shared DAG step definitions (overridden by per-flow steps).
         """
         with ThreadPoolExecutor(max_workers=len(args) or 1) as executor:
             futures = [
@@ -141,6 +159,8 @@ class SchedulerService:
                     pipeline_run_id=pipeline_run_id,
                     start_step=kw.get("start_step"),
                     skip_checkpoints=skip_checkpoints or [],
+                    steps=kw.get("steps") or steps,
+                    initial_completed_steps=kw.get("initial_completed_steps"),
                 )
                 for kw in args
             ]

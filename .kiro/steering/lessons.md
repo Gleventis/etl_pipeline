@@ -82,3 +82,20 @@
 - When a subagent reports a file doesn't exist, verify with `git status` or `ls` before using `fs_write create` — the file may already be committed.
 - `fs_write create` silently overwrites existing files. If the file exists, use `str_replace` to make surgical edits instead.
 - This is an extension of the 2026-03-05 lesson about verifying file existence before using `create`.
+
+## 2026-04-10: Prefect task.submit() requires flow run context
+- `task.submit()` can only be called from within a flow run. Calling `flow.fn()` bypasses the `@flow` decorator entirely — no flow run context is created.
+- Tests that need `.submit()` must call the flow directly (`flow(...)`) instead of `flow.fn(...)`.
+- Calling a Prefect flow directly works without a Prefect server — it runs in-process with the default ConcurrentTaskRunner.
+- Module-level `unittest.mock.patch` decorators still work correctly when tasks run in threads via `.submit()`, because the mock replaces the module-level attribute visible to all threads.
+
+## 2026-04-10: Tightly coupled plan tasks should be implemented together
+- When two tasks in an implementation plan have circular dependencies (e.g., "persist X" and "use persisted X"), treat them as a single atomic unit.
+- Don't force artificial separation that would leave the codebase in a broken intermediate state.
+- Still keep the commit message clear about which plan tasks are covered.
+
+## 2026-04-10: mock.reset_mock() does not clear side_effect
+- `mock.reset_mock()` resets call args and call count but does NOT reset `side_effect` or `return_value` by default.
+- When reusing a mock across phases (e.g., initial run with `side_effect=fn` then resume with `return_value=val`), the old `side_effect` takes precedence over `return_value`.
+- Fix: explicitly set `mock.side_effect = None` before setting a new `return_value`.
+- Alternative: use `mock.reset_mock(side_effect=True, return_value=True)` to clear everything.

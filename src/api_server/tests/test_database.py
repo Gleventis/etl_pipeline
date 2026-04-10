@@ -8,6 +8,7 @@ from src.services.database import (
     AnalyticalResults,
     Files,
     JobExecutions,
+    StepDependencies,
     get_engine,
     get_session,
     init_schema,
@@ -37,6 +38,7 @@ def session(database_url: str):
     with get_session(database_url=database_url) as s:
         s.execute(text("DELETE FROM analytical_results"))
         s.execute(text("DELETE FROM job_executions"))
+        s.execute(text("DELETE FROM step_dependencies"))
         s.execute(text("DELETE FROM files"))
         s.commit()
         yield s
@@ -59,6 +61,11 @@ class TestInitSchema:
         engine = get_engine(database_url=database_url)
         inspector = inspect(engine)
         assert "analytical_results" in inspector.get_table_names()
+
+    def test_creates_step_dependencies_table(self, database_url: str) -> None:
+        engine = get_engine(database_url=database_url)
+        inspector = inspect(engine)
+        assert "step_dependencies" in inspector.get_table_names()
 
     def test_idempotent(self, database_url: str) -> None:
         init_schema(database_url=database_url)
@@ -251,3 +258,79 @@ class TestAnalyticalResultsModel:
 
         fetched = session.execute(select(AnalyticalResults)).scalar_one()
         assert fetched.detail_s3_path is None
+
+
+class TestStepDependenciesModel:
+    """Tests for the StepDependencies SQLAlchemy model."""
+
+    def test_insert_and_read(self, session) -> None:
+        dep = StepDependencies(
+            pipeline_run_id="run-abc-123",
+            step_name="data_cleaning",
+            depends_on_step_name="descriptive_statistics",
+        )
+        session.add(dep)
+        session.commit()
+
+        result = session.execute(select(StepDependencies)).scalar_one()
+        assert result.pipeline_run_id == "run-abc-123"
+        assert result.step_name == "data_cleaning"
+        assert result.depends_on_step_name == "descriptive_statistics"
+        assert result.created_at is not None
+
+    def test_multiple_edges_same_pipeline_run(self, session) -> None:
+        edges = [
+            StepDependencies(
+                pipeline_run_id="run-abc-123",
+                step_name="data_cleaning",
+                depends_on_step_name="descriptive_statistics",
+            ),
+            StepDependencies(
+                pipeline_run_id="run-abc-123",
+                step_name="temporal_analysis",
+                depends_on_step_name="data_cleaning",
+            ),
+            StepDependencies(
+                pipeline_run_id="run-abc-123",
+                step_name="geospatial_analysis",
+                depends_on_step_name="data_cleaning",
+            ),
+        ]
+        session.add_all(edges)
+        session.commit()
+
+        results = (
+            session.execute(
+                select(StepDependencies).where(
+                    StepDependencies.pipeline_run_id == "run-abc-123"
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(results) == 3
+
+    def test_different_pipeline_runs_isolated(self, session) -> None:
+        dep1 = StepDependencies(
+            pipeline_run_id="run-1",
+            step_name="data_cleaning",
+            depends_on_step_name="descriptive_statistics",
+        )
+        dep2 = StepDependencies(
+            pipeline_run_id="run-2",
+            step_name="data_cleaning",
+            depends_on_step_name="descriptive_statistics",
+        )
+        session.add_all([dep1, dep2])
+        session.commit()
+
+        results_run1 = (
+            session.execute(
+                select(StepDependencies).where(
+                    StepDependencies.pipeline_run_id == "run-1"
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(results_run1) == 1

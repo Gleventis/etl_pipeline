@@ -91,6 +91,23 @@ class JobExecutions(Base):
     )
 
 
+class StepDependencies(Base):
+    """DAG edges per pipeline run for branching pipeline topology."""
+
+    __tablename__ = "step_dependencies"
+    __table_args__ = (
+        Index("idx_step_dependencies_pipeline_run_id", "pipeline_run_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pipeline_run_id: Mapped[str] = mapped_column(Text, nullable=False)
+    step_name: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on_step_name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        nullable=False, server_default=func.now()
+    )
+
+
 class AnalyticalResults(Base):
     """Analytical output tracking."""
 

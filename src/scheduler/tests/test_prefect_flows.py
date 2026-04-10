@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, call, patch
 
+from src.server.models import StepDefinition
 from src.services.analyzer_client import AnalyzerResponse
 from src.services.config import Settings
 from src.services.pipeline import STEPS
@@ -660,3 +661,333 @@ class TestProcessFileFlow:
         last_call = mock_save.call_args
         assert last_call.kwargs["status"] == "completed"
         assert last_call.kwargs["completed_steps"] == list(STEPS)
+
+
+# --- DAG-mode tests (steps parameter) ---
+
+DAG_STEPS = [
+    StepDefinition(name="desc", action="DESCRIPTIVE_STATISTICS"),
+    StepDefinition(name="clean", action="DATA_CLEANING", after=["desc"]),
+    StepDefinition(name="temporal", action="TEMPORAL_ANALYSIS", after=["clean"]),
+    StepDefinition(name="geo", action="GEOSPATIAL_ANALYSIS", after=["clean"]),
+    StepDefinition(
+        name="fare", action="FARE_REVENUE_ANALYSIS", after=["temporal", "geo"]
+    ),
+]
+
+
+class TestProcessFileFlowDAG:
+    """Tests for process_file_flow with DAG step definitions."""
+
+    def _setup_mocks(self, mock_get_conn):
+        mock_conn = MagicMock()
+        mock_get_conn.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_get_conn.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_conn
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_all_steps_succeed(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-001",
+            steps=DAG_STEPS,
+        )
+
+        assert mock_send_job.call_count == 5
+        last_call = mock_save.call_args
+        assert last_call.kwargs["status"] == "completed"
+        assert len(last_call.kwargs["completed_steps"]) == 5
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_uses_action_names_for_analyzer(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-002",
+            steps=DAG_STEPS,
+        )
+
+        # Analyzer receives lowercase action names, not DAG node names
+        dispatched_actions = [c.kwargs["step"] for c in mock_send_job.call_args_list]
+        expected_actions = {
+            "descriptive_statistics",
+            "data_cleaning",
+            "temporal_analysis",
+            "geospatial_analysis",
+            "fare_revenue_analysis",
+        }
+        assert set(dispatched_actions) == expected_actions
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_respects_dependency_order(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-003",
+            steps=DAG_STEPS,
+        )
+
+        dispatched = [c.kwargs["step"] for c in mock_send_job.call_args_list]
+        # desc must come before clean; clean before temporal and geo; both before fare
+        assert dispatched.index("descriptive_statistics") < dispatched.index(
+            "data_cleaning"
+        )
+        assert dispatched.index("data_cleaning") < dispatched.index("temporal_analysis")
+        assert dispatched.index("data_cleaning") < dispatched.index(
+            "geospatial_analysis"
+        )
+        assert dispatched.index("temporal_analysis") < dispatched.index(
+            "fare_revenue_analysis"
+        )
+        assert dispatched.index("geospatial_analysis") < dispatched.index(
+            "fare_revenue_analysis"
+        )
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_checkpoint_false_skips_save(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        steps_with_skip = [
+            StepDefinition(
+                name="desc", action="DESCRIPTIVE_STATISTICS", checkpoint=False
+            ),
+            StepDefinition(
+                name="clean", action="DATA_CLEANING", after=["desc"], checkpoint=True
+            ),
+        ]
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-004",
+            steps=steps_with_skip,
+        )
+
+        # 1 initial + 0 (desc batch checkpoint=False) + 1 (clean batch checkpoint=True) = 2
+        assert mock_save.call_count == 2
+        last_call = mock_save.call_args
+        assert last_call.kwargs["status"] == "completed"
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_failure_saves_state(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102]
+        mock_send_job.side_effect = [
+            AnalyzerResponse(success=True),
+            AnalyzerResponse(success=False, error="boom"),
+        ]
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-005",
+            steps=DAG_STEPS,
+        )
+
+        assert mock_send_job.call_count == 2
+        last_call = mock_save.call_args
+        assert last_call.kwargs["status"] == "failed"
+        assert last_call.kwargs["failed_step"] == "clean"
+        assert last_call.kwargs["completed_steps"] == ["desc"]
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_none_falls_back_to_linear(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        """steps=None uses the linear STEPS list (backward compat)."""
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow.fn(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-006",
+            steps=None,
+        )
+
+        assert mock_send_job.call_count == len(STEPS)
+        dispatched = [c.kwargs["step"] for c in mock_send_job.call_args_list]
+        assert dispatched == list(STEPS)
+
+    @patch("src.services.prefect_flows.update_file")
+    @patch("src.services.prefect_flows.update_job_execution")
+    @patch("src.services.prefect_flows.save_job_state")
+    @patch("src.services.prefect_flows.get_connection")
+    @patch("src.services.prefect_flows.send_job")
+    @patch("src.services.prefect_flows.create_job_execution")
+    @patch("src.services.prefect_flows.create_file_record")
+    def test_dag_parallel_steps_submitted_concurrently(
+        self,
+        mock_create_file,
+        mock_create_job,
+        mock_send_job,
+        mock_get_conn,
+        mock_save,
+        mock_update_job,
+        mock_update_file,
+    ) -> None:
+        """Temporal and geospatial steps run in the same batch (concurrently)."""
+        mock_create_file.return_value = 10
+        mock_create_job.side_effect = [101, 102, 103, 104, 105]
+        mock_send_job.return_value = AnalyzerResponse(success=True)
+        self._setup_mocks(mock_get_conn)
+        settings = Settings()
+
+        process_file_flow(
+            object_name="yellow/2022/01/file.parquet",
+            bucket="raw-data",
+            settings=settings,
+            db_url="postgresql://test:test@localhost/test",
+            pipeline_run_id="run-dag-parallel",
+            steps=DAG_STEPS,
+        )
+
+        # Verify all 5 steps executed
+        assert mock_send_job.call_count == 5
+
+        # Verify temporal and geo both dispatched before fare
+        dispatched = [c.kwargs["step"] for c in mock_send_job.call_args_list]
+        temporal_idx = dispatched.index("temporal_analysis")
+        geo_idx = dispatched.index("geospatial_analysis")
+        fare_idx = dispatched.index("fare_revenue_analysis")
+        clean_idx = dispatched.index("data_cleaning")
+
+        # Both must come after clean and before fare
+        assert temporal_idx > clean_idx
+        assert geo_idx > clean_idx
+        assert temporal_idx < fare_idx
+        assert geo_idx < fare_idx
+
+        # Verify they were submitted in the same batch by checking
+        # that their create_job_execution calls are adjacent
+        job_step_names = [c.kwargs["step_name"] for c in mock_create_job.call_args_list]
+        temporal_job_idx = job_step_names.index("temporal")
+        geo_job_idx = job_step_names.index("geo")
+        assert abs(temporal_job_idx - geo_job_idx) == 1

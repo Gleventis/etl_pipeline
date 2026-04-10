@@ -296,6 +296,40 @@ class RecoveryTimeResponse(BaseModel):
     percent_improvement: float
 
 
+# --- Step Dependencies ---
+
+
+class StepDependencyEdge(BaseModel):
+    """Single DAG edge in a step dependency graph."""
+
+    step_name: str = Field(min_length=1)
+    depends_on_step_name: str = Field(min_length=1)
+
+
+class StepDependencyBatchCreate(BaseModel):
+    """Request to batch-insert DAG edges for a pipeline run."""
+
+    pipeline_run_id: str = Field(min_length=1)
+    edges: list[StepDependencyEdge] = Field(min_length=1)
+
+
+class StepDependencyBatchResponse(BaseModel):
+    """Response from batch step dependency insertion."""
+
+    model_config = ConfigDict(frozen=True)
+
+    inserted: int
+
+
+class StepDependencyResponse(BaseModel):
+    """DAG edges for a pipeline run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pipeline_run_id: str
+    edges: list[StepDependencyEdge]
+
+
 if __name__ == "__main__":
     file_req = FileCreate(bucket="raw-data", object_name="test.parquet")
     print(f"FileCreate: {file_req.model_dump()}")

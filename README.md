@@ -1,6 +1,6 @@
 # Checkpointing in Distributed Systems — ETL Pipeline
 
-A thesis project investigating how checkpointing affects fault tolerance, recovery time, and resource efficiency in distributed architectures. The research vehicle is a microservice-based ETL system that processes NYC TLC (Taxi & Limousine Commission) taxi trip data through five sequential analytical steps, persisting state after each step so that on failure any service can resume from the last checkpoint.
+A thesis project investigating how checkpointing affects fault tolerance, recovery time, and resource efficiency in distributed architectures. The research vehicle is a microservice-based ETL system that processes NYC TLC (Taxi & Limousine Commission) taxi trip data through five analytical steps arranged as a DAG (directed acyclic graph), persisting state after each step so that on failure any service can resume from the last checkpoint. Steps can declare explicit dependencies, enabling parallel branches (e.g., temporal and geospatial analysis run concurrently) and fan-in convergence points.
 
 ## Architecture
 
@@ -36,6 +36,7 @@ graph TD
     SC -- "create jobs & files" --> API
     SC -- "POST /analyze/*" --> AN
     SC -- "checkpoint state" --> PG
+    SC -. "parallel branches via DAG" .-> AN
 
     AN -- "read/write parquet" --> S3
     AN -- "post results" --> API
@@ -50,8 +51,8 @@ graph TD
 | Service | Port | Role |
 |---------|------|------|
 | Data Collector | 8010 | Downloads TLC parquet files, validates schema, uploads to MinIO |
-| Scheduler | 8011 | Orchestrates the 5-step analytical pipeline via Prefect, manages checkpoints |
-| Analyzer | 8012 | Runs analytical steps (descriptive stats → cleaning → temporal → geospatial → fare/revenue) |
+| Scheduler | 8011 | Orchestrates the analytical pipeline via Prefect (sequential or DAG-based parallel execution), manages checkpoints and DAG-aware resume |
+| Analyzer | 8012 | Runs analytical steps (descriptive stats, cleaning, temporal, geospatial, fare/revenue); execution order determined by pipeline DAG |
 | API Server | 8013 | CRUD for files, jobs, results; exposes pipeline metrics |
 | Aggregator | 8014 | Computes cross-file aggregate statistics |
 | Translator | 8015 | JSON DSL interface that orchestrates the full pipeline end-to-end |
